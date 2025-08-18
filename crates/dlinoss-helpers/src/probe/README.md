@@ -1,0 +1,51 @@
+# Candle Probe (Migrated)
+
+This directory contains the Candle integration probe functionality, migrated from `TEMPTEST/candle_probe` into the `dlinoss-helpers` workspace sub-crate.
+
+## Purpose
+
+The probe validates that essential Candle operations work correctly with the local Candle workspace dependency:
+- `cumsum` , `inclusive_scan` and `exclusive_scan` for sequential scan operations  
+- `rfft` and `irfft` for FFT-based kernelization (when `fft` feature is enabled)
+
+## Migration Details
+
+**Original location**: `/TEMPTEST/candle_probe/`  
+**New location**: `/crates/dlinoss-helpers/src/probe/`  
+**Migration date**: August 18, 2025
+
+### Changes Made
+- Source code moved from standalone crate to module within `dlinoss-helpers`
+- Dependencies integrated into `dlinoss-helpers/Cargo.toml`
+- Test functions preserved exactly as implemented
+- Feature gates maintained (`fft` feature for FFT operations)
+
+## Usage
+
+### As Module Tests
+```bash
+# From workspace root
+cargo test -p dlinoss-helpers
+cargo test -p dlinoss-helpers --features fft
+```
+
+### In Code
+```rust
+use dlinoss_helpers::probe::candle_probe;
+
+// The probe functions are available as regular functions
+// though they're primarily intended as tests
+```
+
+## Integration
+
+This probe is now integrated into the workspace structure and can be used by the xtask workflow for `verify-candle` operations. The functionality remains identical to the original standalone version.
+
+## Files
+
+- `candle_probe.rs`: Core probe test functions (migrated from `lib.rs`)
+- `mod.rs`: Module declaration
+
+## Future
+
+This integration allows the probe to be maintained as part of the main workspace rather than as a separate temporary test crate. The probe functionality may be expanded or integrated more deeply into the helper utilities as the project evolves.

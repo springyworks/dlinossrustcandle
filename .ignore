@@ -1,0 +1,7 @@
+# ripgrep ignore file for developer searches
+# Safe, non-source exclusions to keep searches fast.
+/.git/
+/target/
+**/.ipynb_checkpoints/
+**/__pycache__/
+/media/rustuser/onSSD/**

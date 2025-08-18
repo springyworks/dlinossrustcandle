@@ -1,0 +1,47 @@
+[package]
+name = "dlinoss-display"
+version = "0.1.0"
+edition = "2021"
+description = "Display utilities for D-LinOSS (egui/egui_plot GUI, ratatui TUI, minifb)"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+anyhow = "1"
+candle = { package = "candle-core", version = "0.9.1", path = "../../../../from_github/candle/candle-core", default-features = false }
+dlinoss-augment = { path = "../dlinoss-augment" }
+
+# Optional UIs
+[features]
+default = []
+# GUI via egui/egui_plot
+egui = ["dep:eframe", "dep:egui", "dep:egui_plot"]
+# TUI via ratatui/crossterm
+etui = ["dep:ratatui", "dep:crossterm"]
+# minifb window
+minifb = ["dep:minifb"]
+fft = ["dlinoss-augment/fft", "candle/fft"]
+
+[dependencies.eframe]
+version = "0.28"
+optional = true
+features = ["glow"]
+
+[dependencies.egui]
+version = "0.28"
+optional = true
+
+[dependencies.egui_plot]
+version = "0.28"
+optional = true
+
+[dependencies.ratatui]
+version = "0.26"
+optional = true
+
+[dependencies.crossterm]
+version = "0.27"
+optional = true
+
+[dependencies.minifb]
+version = "0.25"
+optional = true

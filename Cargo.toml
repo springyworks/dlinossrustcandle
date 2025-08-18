@@ -1,0 +1,68 @@
+[workspace]
+members = [
+	".",
+	"crates/dlinoss-augment",
+	"crates/dlinoss-display",
+	"crates/dlinoss-helpers",
+	"notebooks",
+	"xtask",
+]
+exclude = [
+	"TEMPTEST/candle_probe",
+]
+
+[package]
+name = "dlinossrustcandle"
+version = "0.1.0"
+edition = "2021"
+description = "DLiNOSS (Damped Linear Oscillatory State-Space) layer implemented on Hugging Face Candle tensors"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Candle deps (versioned), overridden via [patch.crates-io] below to local paths
+candle = { package = "candle-core", version = "0.9.1", default-features = false }
+candle-nn = { version = "0.9.1", default-features = false }
+anyhow = { version = "1", features = ["backtrace"] }
+dlinoss-augment = { path = "crates/dlinoss-augment" }
+dlinoss-display = { path = "crates/dlinoss-display", optional = true }
+dlinoss-helpers = { path = "crates/dlinoss-helpers", optional = true }
+
+[features]
+default = []
+# Pass-through optional accelerators (enable when building the crate, e.g. `--features cuda`)
+accelerate = ["candle/accelerate", "candle-nn/accelerate"]
+cuda = ["candle/cuda", "candle-nn/cuda"]
+cudnn = ["candle/cudnn", "candle-nn/cudnn"]
+mkl = ["candle/mkl", "candle-nn/mkl"]
+metal = ["candle/metal", "candle-nn/metal"]
+
+# Experimental execution features for this crate (off by default)
+# parallel-scan: enable planned parallel scan path (requires additional implementation)
+parallel-scan = []
+# fft: enable Candle FFT support; maps through to candle-core's `fft` feature
+fft = ["candle/fft", "dlinoss-augment/fft", "dlinoss-display/fft"]
+# UI feature passthroughs
+egui = ["dep:dlinoss-display", "dlinoss-display/egui"]
+etui = ["dep:dlinoss-display", "dlinoss-display/etui"]
+minifb = ["dep:dlinoss-display", "dlinoss-display/minifb"]
+cli = ["dep:dlinoss-helpers"]
+augment = ["dlinoss-augment/augment"]
+augment-expr = ["dlinoss-augment/augment-expr"]
+
+[dev-dependencies]
+eframe = { version = "0.28", default-features = false, features = ["glow"] }
+egui = "0.28"
+egui_plot = "0.28"
+ratatui = { version = "0.26" }
+crossterm = { version = "0.27" }
+## Lightly reference the Candle notebooks crate in dev to keep its local patch "used"
+candle-notebooks = { path = "../../from_github/candle/0aEXPLORATION/research/notebooks/candle_notebooks", default-features = false }
+## Same for candle-transformers to satisfy upstream patch logs when present
+candle-transformers = { path = "../../from_github/candle/candle-transformers" }
+
+[patch.crates-io]
+candle-core = { path = "../../from_github/candle/candle-core" }
+candle-nn = { path = "../../from_github/candle/candle-nn" }
+## Keep these in sync with your local Candle checkout so cargo doesn't warn about unused patches
+candle-transformers = { path = "../../from_github/candle/candle-transformers" }
+candle-notebooks = { path = "../../from_github/candle/0aEXPLORATION/research/notebooks/candle_notebooks" }

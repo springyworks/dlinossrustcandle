@@ -1,0 +1,71 @@
+# Source Directory (`src/`)
+
+This directory contains the core implementation of D-LinOSS (Damped Linear Oscillatory State-Space) layer for Candle tensors.
+
+## Structure
+
+### Core Library Files
+- **`lib.rs`**: Main library entry point with public API exports and feature gates
+- **`dlinoss.rs`**: Core D-LinOSS layer implementation (`DLinOssLayer`, `DLinOssLayerConfig`)
+- **`scan.rs`**: Sequential scan operations for state-space computations
+- **`kernelize.rs`**: FFT-based kernelization (feature-gated under `fft`)
+
+### Binary Targets
+- **`bin/dlinoss_demo.rs`**: Standalone demo binary for Windows `.exe` distribution
+
+### Documentation
+- **`dLinOSS paper.pdf`**: Original research paper (local copy)
+- **`dlinoss_paper.txt`**: Text version of the paper for easy reference
+
+## Key Components
+
+### `DLinOssLayer`
+The main neural network layer that transforms input tensors `[B, T, In] → [B, T, Out]` using damped oscillatory state-space dynamics.
+
+### Execution Modes
+1. **Sequential Scan** (default): Stable, always available
+2. **Parallel Scan** (feature-gated): Experimental, better performance for long sequences
+3. **FFT Kernelization** (feature-gated): Fastest for very long sequences, requires `fft` feature
+
+### Mathematical Foundation
+- Continuous-time linear SSM: `ẋ = Ax + Bu, y = Cx + Du`
+- Damped oscillatory 2×2 blocks for complex poles `p = -α ± iω`
+- Exact discretization preserving stability (`α > 0` ensures `ρ(A_d) < 1`)
+
+## Features
+
+- **Default**: CPU-only, sequential scan
+- **`fft`**: Enables FFT operations and kernelization
+- **`cuda`**, **`metal`**, **`mkl`**: Hardware acceleration (experimental)
+- **`egui`**, **`etui`**, **`minifb`**: Display backends (via sub-crates)
+- **`cli`**: Command-line helpers (via dlinoss-helpers)
+
+## Usage
+
+```rust
+use dlinossrustcandle::{DLinOssLayer, DLinOssLayerConfig};
+use candle_core::{Device, Tensor, DType};
+
+// Create layer configuration
+let config = DLinOssLayerConfig::new(input_dim, output_dim, state_dim);
+let layer = DLinOssLayer::new(config, &Device::Cpu, DType::F32)?;
+
+// Transform input [batch, time, input] -> [batch, time, output]
+let output = layer.forward(&input_tensor, None)?;
+```
+
+## Integration
+
+This source directory implements the core functionality described in `requirements.md`. It uses the workspace sub-crates:
+- `dlinoss-augment`: Candle operation wrappers
+- `dlinoss-display`: Visualization utilities  
+- `dlinoss-helpers`: CLI and utility functions
+
+## Testing
+
+Run tests with:
+```bash
+cargo test                    # Basic functionality
+cargo test --features fft     # With FFT support
+cargo run -p xtask -- ci      # Full test suite
+```

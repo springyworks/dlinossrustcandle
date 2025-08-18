@@ -1,0 +1,24 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../dlinoss-rust"
+		},
+		{
+			"path": "../../../pyth/damped-linoss"
+		},
+		{
+			"path": "../../from_github/candle"
+		}
+	],
+	"settings": {
+		"workbench.colorCustomizations": {
+			"editor.background": "#010101",
+			"activityBar.background": "#2B294C",
+			"titleBar.activeBackground": "#3C3A6B",
+			"titleBar.activeForeground": "#FCFCFD"
+		}
+	}
+}

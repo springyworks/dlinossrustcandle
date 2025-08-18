@@ -1,0 +1,11 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "cargo-check-notebooks",
+			"type": "shell",
+			"command": "cargo check --features fft",
+			"group": "build"
+		}
+	]
+}

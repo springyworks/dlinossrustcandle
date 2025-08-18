@@ -1,0 +1,33 @@
+# Rust build artifacts
+/target/
+**/target/
+
+# Binary objects and compilation artifacts
+**/*.o
+**/*.a
+**/*.so
+**/*.dll
+**/*.dylib
+**/*.exe
+**/*.rlib
+**/*.rmeta
+
+# IDE and editor
+**/.DS_Store
+**/*.swp
+**/*.swo
+
+# Python venv if created locally
+.venv/
+
+# Logs, dumps
+*.log
+
+# Ignore PDF documents anywhere in the repo
+**/*.pdf
+
+# Jupyter checkpoints
+**/.ipynb_checkpoints/
+
+# External Windows mount (avoid scanning/caching)
+/media/rustuser/onSSD/**

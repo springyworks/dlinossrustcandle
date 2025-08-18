@@ -1,0 +1,17 @@
+#!/bin/bash
+# Smart search wrapper that prefers ripgrep for development
+# This script helps AI assistants choose the best search tool
+
+# Check if we're in a development directory
+is_dev_context() {
+    [[ -f "Cargo.toml" ]] || [[ -f "package.json" ]] || [[ -f ".git/config" ]] || [[ -d ".git" ]]
+}
+
+# Check if ripgrep is available and we're in dev context
+if command -v rg >/dev/null 2>&1 && is_dev_context; then
+    # Use ripgrep with smart defaults for development
+    exec rg -n --hidden -S -g '!target' -g '!.git' -g '!**/*.ipynb' "$@"
+else
+    # Fall back to system grep
+    exec grep "$@"
+fi

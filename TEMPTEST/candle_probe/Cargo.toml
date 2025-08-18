@@ -1,0 +1,14 @@
+[package]
+name = "candle_probe"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+anyhow = "1"
+candle = { package = "candle-core", path = "/home/rustuser/projects/rust/from_github/candle/candle-core", default-features = false }
+
+[features]
+default = []
+fft = ["candle/fft"]

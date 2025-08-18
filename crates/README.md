@@ -1,0 +1,108 @@
+# Workspace Sub-Crates (`crates/`)
+
+This directory contains modular sub-crates that support the main D-LinOSS implementation. Each crate has a specific, focused responsibility.
+
+## Sub-Crates Overview
+
+### `dlinoss-augment/`
+**Purpose**: Trait-based wrappers around Candle operations  
+**Key Features**:
+- `TensorScanExt`: Provides cumsum/exclusive_scan convenience methods
+- `TensorFftExt`: FFT operations wrapper (feature-gated)
+- No custom implementations - purely Candle operation delegation
+- Stable API layer over Candle's evolving scan/FFT APIs
+
+**Dependencies**: `candle-core`, optional `candle_tensor_augment`
+
+### `dlinoss-display/`
+**Purpose**: Visualization and display utilities  
+**Key Features**:
+- **egui**: GUI plotting with `egui_plot` for interactive visualization
+- **etui**: Terminal UI using `ratatui` for console-based displays  
+- **minifb**: Simple framebuffer windows for minimal graphics
+- FFT spectrum visualization when `fft` feature is enabled
+- Dual-pane layouts for time-domain and frequency-domain views
+
+**Dependencies**: Optional UI frameworks (`eframe`, `ratatui`, `minifb`)
+
+### `dlinoss-helpers/`
+**Purpose**: CLI parsing and utility functions  
+**Key Features**:
+- `CommonCli`: Standardized command-line argument structure
+- Interactive dialog mode for old-school parameter input
+- UI mode selection (GUI/TUI/Headless)
+- Parameter validation and defaults
+- Candle probe utilities (migrated from `TEMPTEST/candle_probe`)
+
+**Dependencies**: `clap`, `anyhow`
+
+## Design Philosophy
+
+### Modularity
+Each sub-crate can be used independently and has minimal, focused dependencies. This allows:
+- Selective feature compilation (only include needed UI backends)
+- Clear separation of concerns
+- Easier testing and maintenance
+
+### Feature Gates
+All optional functionality is feature-gated:
+```toml
+# In main Cargo.toml
+[features]
+egui = ["dlinoss-display/egui"]
+etui = ["dlinoss-display/etui"] 
+fft = ["dlinoss-augment/fft"]
+cli = ["dlinoss-helpers"]
+```
+
+### Candle Integration
+All sub-crates maintain compatibility with the local Candle workspace through path dependencies. The `dlinoss-augment` crate serves as the primary integration layer.
+
+## Usage Patterns
+
+### Basic (no sub-crates)
+```rust
+// Just core D-LinOSS functionality
+use dlinossrustcandle::DLinOssLayer;
+```
+
+### With CLI helpers
+```rust
+// Add command-line parsing
+use dlinossrustcandle::helpers::CommonCli;
+let args = CommonCli::parse()?;
+```
+
+### With visualization
+```rust
+// Add GUI display
+use dlinossrustcandle::display_egui;
+display_egui::show_dual_pane(&input, &output)?;
+```
+
+## Development
+
+### Adding New Sub-Crates
+1. Create directory in `crates/`
+2. Add basic `Cargo.toml` with workspace membership
+3. Implement focused functionality
+4. Add feature gates in root `Cargo.toml`
+5. Re-export in main `lib.rs` if needed
+
+### Testing Sub-Crates
+```bash
+# Test individual crate
+cargo test -p dlinoss-augment
+
+# Test with features  
+cargo test -p dlinoss-display --features egui
+
+# Test all sub-crates
+cargo test --workspace
+```
+
+## Migration Notes
+
+- `TEMPTEST/candle_probe` has been migrated into `dlinoss-helpers` as a probe utility
+- Original functionality preserved but integrated into the workspace structure
+- All build artifacts now properly excluded by `.gitignore`

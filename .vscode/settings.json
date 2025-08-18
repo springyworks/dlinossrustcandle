@@ -1,0 +1,35 @@
+{
+    "workbench.colorCustomizations": {
+        "editor.background": "#010101",
+        "activityBar.background": "#2B294C",
+        "titleBar.activeBackground": "#3C3A6B",
+        "titleBar.activeForeground": "#FCFCFD"
+    },
+    // Speed up global search by ignoring generated/heavy folders
+    "search.exclude": {
+        "**/.git": true,
+        "**/target": true,
+        "**/.ipynb_checkpoints": true,
+        "**/*.ipynb": false,
+        // Exclude external Windows mount to avoid slow NTFS scans
+        "/media/rustuser/onSSD/**": true
+    },
+    // Reduce file watcher churn
+    "files.watcherExclude": {
+        "**/.git/**": true,
+        "**/target/**": true,
+        "**/.ipynb_checkpoints/**": true,
+        "/media/rustuser/onSSD/**": true
+    },
+    // AI Assistant Preferences - Help Copilot understand preferred tools
+    "github.copilot.advanced": {
+        "debug.overrideEngine": "copilot-chat",
+        "debug.testOverrideProxyUrl": "",
+        "debug.overrideProxyUrl": ""
+    },
+    // Terminal hints for AI tools
+    "terminal.integrated.env.linux": {
+        "PREFERRED_SEARCH": "gg",
+        "SEARCH_HINT": "Use 'gg pattern' instead of 'grep pattern' for faster searches"
+    }
+}

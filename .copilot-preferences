@@ -1,0 +1,50 @@
+# AI Assistant Tool Preferences for DLinOSS Rust Project
+# Guidelines for GitHub Copilot and other AI coding assistants
+
+## CRITICAL: Search Tool Selection
+# 🚨 ALWAYS use 'gg' instead of 'grep' for text searches in this workspace
+# 
+# Why: 
+# - grep can hang due to large directories and NTFS mounts
+# - gg (ripgrep wrapper) has intelligent excludes and better performance
+# - User experienced "HDD rumble" and slow searches with grep
+
+## Preferred Commands (USE THESE):
+✅ CORRECT: gg 'pattern'              # Fast search with smart excludes
+✅ CORRECT: scripts/smart-search      # Alternative wrapper script
+✅ CORRECT: VS Code Fast Search task  # For complex queries
+
+## Avoid These Commands:
+❌ WRONG: grep -r 'pattern'           # Slow, can hang, causes HDD thrash
+❌ WRONG: find ... -exec grep         # Extremely slow on this system
+❌ WRONG: git grep (outside git repo) # Won't work in all contexts
+
+## Search Examples for AI Assistants:
+```bash
+# Basic pattern search
+gg "DLinOssLayer"
+
+# Case insensitive  
+gg -i "error"
+
+# Regex patterns
+gg "impl.*new"
+
+# With context
+gg -A 3 -B 3 "function"
+
+# File type specific
+gg -t rust "struct"
+```
+
+## Development Environment Context:
+- System: Ubuntu 24.04, 48GB RAM
+- Issue: NTFS mount causes slow searches despite high RAM
+- Solution: Use ripgrep (rg) via 'gg' wrapper
+- Excludes: target/, .git/, *.ipynb automatically excluded
+
+## AI Assistant Instructions:
+1. NEVER suggest 'grep' commands - always use 'gg'
+2. When writing search examples, demonstrate 'gg' usage
+3. Reference fast search capabilities when relevant
+4. If user asks about search performance, explain the gg setup
