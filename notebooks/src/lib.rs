@@ -160,7 +160,7 @@ pub mod realtime_gui {
     pub fn run_realtime_demo() -> Result<()> {
         let app = TinyApp::new()?;
         let opts = NativeOptions::default();
-        eframe::run_native("DLinOSS Realtime", opts, Box::new(|_| Ok::<Box<dyn App>, anyhow::Error>(Box::new(app))))
+    eframe::run_native("DLinOSS Realtime", opts, Box::new(|_| Ok::<Box<dyn App>, _>(Box::new(app))))
             .map_err(|e| anyhow::anyhow!("GUI error: {e}"))
     }
 }
