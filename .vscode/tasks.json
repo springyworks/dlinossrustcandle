@@ -28,17 +28,23 @@
 			],
 			"isBackground": false,
 			"problemMatcher": []
-				},
-				{
-					"label": "Fast Search (ripgrep) — sample TensorFftExt",
-					"type": "shell",
-					"command": "bash",
-					"args": [
-						"-lc",
-						"if ! command -v rg >/dev/null 2>&1; then echo \"ripgrep not installed\"; exit 1; fi; cd /home/rustuser/projects/rust/active/dlinossrustcandle; rg -n --hidden -S -g \"!target\" -g \"!.git\" -g \"!**/*.ipynb\" TensorFftExt | sed -n '1,200p'"
-					],
-					"isBackground": false,
-					"problemMatcher": []
+		},
+		{
+			"label": "Fast Search (ripgrep) — sample TensorFftExt",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"if ! command -v rg >/dev/null 2>&1; then echo \"ripgrep not installed\"; exit 1; fi; cd /home/rustuser/projects/rust/active/dlinossrustcandle; rg -n --hidden -S -g \"!target\" -g \"!.git\" -g \"!**/*.ipynb\" TensorFftExt | sed -n '1,200p'"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "build-and-test",
+			"type": "shell",
+			"command": "cargo run -p xtask -- verify-candle --fft && cargo run -p xtask -- ci",
+			"group": "build"
 		}
 	]
 }

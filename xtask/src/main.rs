@@ -169,8 +169,25 @@ fn main() -> Result<()> {
         Cmd::DiscoverTests { run, features } => {
             discover_tests(&sh, run, features)?;
         }
-        Cmd::BuildWindows { release, bin, example, features, copy_to_windows, out_name, out_dir } => {
-            build_windows(&sh, release, bin, example, features, copy_to_windows, out_name, out_dir)?;
+        Cmd::BuildWindows {
+            release,
+            bin,
+            example,
+            features,
+            copy_to_windows,
+            out_name,
+            out_dir,
+        } => {
+            build_windows(
+                &sh,
+                release,
+                bin,
+                example,
+                features,
+                copy_to_windows,
+                out_name,
+                out_dir,
+            )?;
         }
         Cmd::ShipWindowsViz => {
             // One-shot: release build of viz_animated_egui with FFT, copy to shared path with a friendly name
@@ -196,7 +213,7 @@ fn verify_candle_migrated(sh: &Shell, fft: bool) -> Result<()> {
     } else {
         cmd!(sh, "cargo test -p dlinoss-helpers").run()?;
     }
-    
+
     // Also verify dependency tree
     let _ = cmd!(sh, "cargo tree -e features").run();
     Ok(())
@@ -307,27 +324,29 @@ fn probe_fft_and_ifft_roundtrip() -> Result<()> {
 
 fn discover_tests(sh: &Shell, run: bool, features: Vec<String>) -> Result<()> {
     println!("🔍 Discovering tests in workspace...\n");
-    
+
     let root = std::env::current_dir()?;
     let mut test_functions = Vec::new();
     let mut test_files = Vec::new();
-    
+
     // Find all Rust files with test functions
     find_test_functions(&root, &mut test_functions, &mut test_files)?;
-    
+
     // Report findings
     println!("📊 Test Discovery Summary:");
     println!("├─ Total test functions found: {}", test_functions.len());
     println!("├─ Test files found: {}", test_files.len());
-    println!("└─ Feature-gated tests: {}", 
-        test_functions.iter().filter(|t| t.feature_gated).count());
-    
+    println!(
+        "└─ Feature-gated tests: {}",
+        test_functions.iter().filter(|t| t.feature_gated).count()
+    );
+
     println!("\n📁 Test Files by Category:");
     categorize_test_files(&test_files);
-    
+
     println!("\n🧪 Test Functions by Feature:");
     categorize_test_functions(&test_functions);
-    
+
     if run {
         println!("\n🚀 Running discovered tests...");
         run_discovered_tests(sh, &features)?;
@@ -335,7 +354,7 @@ fn discover_tests(sh: &Shell, run: bool, features: Vec<String>) -> Result<()> {
         println!("\n💡 Use --run to execute all discovered tests");
         println!("💡 Use --features fft to include feature-gated tests");
     }
-    
+
     Ok(())
 }
 
@@ -357,25 +376,34 @@ struct TestFile {
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 enum TestCategory {
-    Integration,    // tests/ directory
-    Unit,          // src/ directory  
-    SubCrate,      // crates/ directory
-    Generated,     // xtask generated
-    External,      // outside workspace
+    Integration, // tests/ directory
+    Unit,        // src/ directory
+    SubCrate,    // crates/ directory
+    Generated,   // xtask generated
+    External,    // outside workspace
 }
 
-fn find_test_functions(root: &Path, functions: &mut Vec<TestFunction>, files: &mut Vec<TestFile>) -> Result<()> {
+fn find_test_functions(
+    root: &Path,
+    functions: &mut Vec<TestFunction>,
+    files: &mut Vec<TestFile>,
+) -> Result<()> {
     use std::fs;
-    
-    fn visit_dir(dir: &Path, root: &Path, functions: &mut Vec<TestFunction>, files: &mut Vec<TestFile>) -> Result<()> {
+
+    fn visit_dir(
+        dir: &Path,
+        root: &Path,
+        functions: &mut Vec<TestFunction>,
+        files: &mut Vec<TestFile>,
+    ) -> Result<()> {
         if dir.file_name().and_then(|n| n.to_str()) == Some("target") {
             return Ok(()); // Skip target directories
         }
-        
+
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
-            
+
             if path.is_dir() {
                 visit_dir(&path, root, functions, files)?;
             } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
@@ -384,30 +412,35 @@ fn find_test_functions(root: &Path, functions: &mut Vec<TestFunction>, files: &m
         }
         Ok(())
     }
-    
+
     visit_dir(root, root, functions, files)
 }
 
-fn analyze_rust_file(file_path: &Path, root: &Path, functions: &mut Vec<TestFunction>, files: &mut Vec<TestFile>) -> Result<()> {
+fn analyze_rust_file(
+    file_path: &Path,
+    root: &Path,
+    functions: &mut Vec<TestFunction>,
+    files: &mut Vec<TestFile>,
+) -> Result<()> {
     let content = fs::read_to_string(file_path)?;
     let lines: Vec<&str> = content.lines().collect();
     let mut test_count = 0;
     let mut current_feature_gate: Option<String> = None;
-    
+
     for (line_num, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        
+
         // Check for feature gates
         if trimmed.starts_with("#[cfg(feature = ") {
             if let Some(start) = trimmed.find('"') {
                 if let Some(end) = trimmed.rfind('"') {
                     if start < end {
-                        current_feature_gate = Some(trimmed[start+1..end].to_string());
+                        current_feature_gate = Some(trimmed[start + 1..end].to_string());
                     }
                 }
             }
         }
-        
+
         // Check for test functions
         if trimmed == "#[test]" {
             // Look for the function name on the next line(s)
@@ -425,13 +458,13 @@ fn analyze_rust_file(file_path: &Path, root: &Path, functions: &mut Vec<TestFunc
             }
             current_feature_gate = None; // Reset after use
         }
-        
+
         // Reset feature gate on non-attribute lines
         if !trimmed.starts_with('#') && !trimmed.is_empty() {
             current_feature_gate = None;
         }
     }
-    
+
     if test_count > 0 {
         let category = categorize_file(file_path, root);
         files.push(TestFile {
@@ -440,7 +473,7 @@ fn analyze_rust_file(file_path: &Path, root: &Path, functions: &mut Vec<TestFunc
             category,
         });
     }
-    
+
     Ok(())
 }
 
@@ -460,7 +493,7 @@ fn categorize_file(file_path: &Path, root: &Path) -> TestCategory {
         if components.is_empty() {
             return TestCategory::External;
         }
-        
+
         match components[0].as_os_str().to_str() {
             Some("tests") => TestCategory::Integration,
             Some("src") => TestCategory::Unit,
@@ -476,18 +509,26 @@ fn categorize_file(file_path: &Path, root: &Path) -> TestCategory {
 fn categorize_test_files(files: &[TestFile]) {
     let mut by_category = std::collections::HashMap::new();
     for file in files {
-        by_category.entry(&file.category)
+        by_category
+            .entry(&file.category)
             .or_insert_with(Vec::new)
             .push(file);
     }
-    
+
     for (category, files) in by_category {
         let total_tests: usize = files.iter().map(|f| f.test_count).sum();
-        println!("├─ {:?}: {} files, {} tests", category, files.len(), total_tests);
+        println!(
+            "├─ {:?}: {} files, {} tests",
+            category,
+            files.len(),
+            total_tests
+        );
         for file in files {
-            println!("│  └─ {} ({} tests)", 
-                file.path.file_name().unwrap().to_string_lossy(), 
-                file.test_count);
+            println!(
+                "│  └─ {} ({} tests)",
+                file.path.file_name().unwrap().to_string_lossy(),
+                file.test_count
+            );
         }
     }
 }
@@ -495,30 +536,39 @@ fn categorize_test_files(files: &[TestFile]) {
 fn categorize_test_functions(functions: &[TestFunction]) {
     let mut regular_tests = Vec::new();
     let mut feature_gated = std::collections::HashMap::new();
-    
+
     for func in functions {
         if func.feature_gated {
             let feature_name = func.feature_name.as_deref().unwrap_or("unknown");
-            feature_gated.entry(feature_name.to_string())
+            feature_gated
+                .entry(feature_name.to_string())
                 .or_insert_with(Vec::new)
                 .push(func);
         } else {
             regular_tests.push(func);
         }
     }
-    
+
     println!("├─ Regular tests: {}", regular_tests.len());
     for func in regular_tests.iter().take(5) {
-        println!("│  └─ {}() in {}", func.name, func.file_path.file_name().unwrap().to_string_lossy());
+        println!(
+            "│  └─ {}() in {}",
+            func.name,
+            func.file_path.file_name().unwrap().to_string_lossy()
+        );
     }
     if regular_tests.len() > 5 {
         println!("│  └─ ... and {} more", regular_tests.len() - 5);
     }
-    
+
     for (feature, funcs) in feature_gated {
         println!("├─ Feature '{}': {} tests", feature, funcs.len());
         for func in funcs.iter().take(3) {
-            println!("│  └─ {}() in {}", func.name, func.file_path.file_name().unwrap().to_string_lossy());
+            println!(
+                "│  └─ {}() in {}",
+                func.name,
+                func.file_path.file_name().unwrap().to_string_lossy()
+            );
         }
         if funcs.len() > 3 {
             println!("│  └─ ... and {} more", funcs.len() - 3);
@@ -534,7 +584,7 @@ fn run_discovered_tests(sh: &Shell, features: &[String]) -> Result<()> {
         let features_str = features.join(",");
         cmd!(sh, "cargo test --workspace --features {features_str}").run()?;
     }
-    
+
     // Run individual sub-crate tests to ensure nothing is missed
     let crates = ["dlinoss-augment", "dlinoss-display", "dlinoss-helpers"];
     for crate_name in crates {
@@ -546,7 +596,7 @@ fn run_discovered_tests(sh: &Shell, features: &[String]) -> Result<()> {
             cmd!(sh, "cargo test -p {crate_name} --features {features_str}").run()?;
         }
     }
-    
+
     Ok(())
 }
 
@@ -576,17 +626,25 @@ fn build_windows(
 
     // Resolve target: prefer explicit bin/example, default to example viz_animated_egui
     if bin.is_some() && example.is_some() {
-        return Err(anyhow::anyhow!("--bin and --example are mutually exclusive"));
+        return Err(anyhow::anyhow!(
+            "--bin and --example are mutually exclusive"
+        ));
     }
     let is_bin = bin.is_some();
     let target_name = if let Some(b) = bin.clone() {
         b
     } else {
-        example.clone().unwrap_or_else(|| "viz_animated_egui".to_string())
+        example
+            .clone()
+            .unwrap_or_else(|| "viz_animated_egui".to_string())
     };
 
     // Build for Windows
-    let mut cmd_args: Vec<String> = vec!["build".into(), "--target".into(), "x86_64-pc-windows-gnu".into()];
+    let mut cmd_args: Vec<String> = vec![
+        "build".into(),
+        "--target".into(),
+        "x86_64-pc-windows-gnu".into(),
+    ];
     if is_bin {
         cmd_args.push("--bin".into());
     } else {
@@ -616,9 +674,15 @@ fn build_windows(
         }
     } else {
         if release {
-            format!("target/x86_64-pc-windows-gnu/release/examples/{}.exe", target_name)
+            format!(
+                "target/x86_64-pc-windows-gnu/release/examples/{}.exe",
+                target_name
+            )
         } else {
-            format!("target/x86_64-pc-windows-gnu/debug/examples/{}.exe", target_name)
+            format!(
+                "target/x86_64-pc-windows-gnu/debug/examples/{}.exe",
+                target_name
+            )
         }
     };
 
@@ -648,7 +712,10 @@ fn build_windows(
             };
             let dest_dir = out_dir.unwrap_or(auto_default);
             if !std::path::Path::new(&dest_dir).exists() {
-                println!("ℹ️  Destination directory does not exist, creating: {}", dest_dir);
+                println!(
+                    "ℹ️  Destination directory does not exist, creating: {}",
+                    dest_dir
+                );
                 std::fs::create_dir_all(&dest_dir)?;
             }
             let base = out_name.unwrap_or(target_name);
@@ -660,7 +727,10 @@ fn build_windows(
             println!("ℹ️  Skipped copy. Use --copy-to-windows to copy automatically.");
         }
     } else {
-        return Err(anyhow::anyhow!("Build succeeded but executable not found at {}", exe_path));
+        return Err(anyhow::anyhow!(
+            "Build succeeded but executable not found at {}",
+            exe_path
+        ));
     }
 
     Ok(())

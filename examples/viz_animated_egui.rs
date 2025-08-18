@@ -25,7 +25,7 @@ impl InputMode {
     fn name(&self) -> &'static str {
         match self {
             InputMode::Sine => "Sine Wave",
-            InputMode::Step => "Step Function", 
+            InputMode::Step => "Step Function",
             InputMode::SinePlusStep => "Sine + Step",
             InputMode::Square => "Square Wave",
             InputMode::Noise => "Gaussian Noise",
@@ -52,13 +52,13 @@ impl InputMode {
 struct AnimatedDLinOSSApp {
     device: Device,
     layer: DLinOssLayer,
-    
+
     // Animation state
     time_step: f32,
     last_update: Instant,
     animation_speed: f32,
     window_size: usize,
-    
+
     // Settings
     freq: f32,
     mode: InputMode,
@@ -66,13 +66,13 @@ struct AnimatedDLinOSSApp {
     show_fft: bool,
     auto_cycle: bool,
     paused: bool,
-    
+
     // Ring buffers for streaming visualization
     input_history: Vec<f32>,
     output_history: Vec<f32>,
     cumsum_history: Vec<f32>,
     fft_history: Vec<f32>,
-    
+
     // Statistics
     input_rms: f32,
     output_rms: f32,
@@ -92,13 +92,13 @@ impl AnimatedDLinOSSApp {
             dtype: DType::F32,
         };
         let mut layer = DLinOssLayer::new(cfg, &device)?;
-        
+
         // Initialize with stable parameters
         stable_init_layer(&mut layer, 0)?;
-        
+
         let window_size = 512;
         let now = Instant::now();
-        
+
         Ok(Self {
             device,
             layer,
@@ -128,7 +128,7 @@ impl AnimatedDLinOSSApp {
         let device = &self.device;
         let t_start = self.time_step;
         let dt = 0.015;
-        
+
         let signal = match self.mode {
             InputMode::Sine => {
                 let values: Vec<f32> = (0..length)
@@ -143,7 +143,11 @@ impl AnimatedDLinOSSApp {
                 let values: Vec<f32> = (0..length)
                     .map(|i| {
                         let t = t_start + (i as f32) * dt;
-                        if (t % (1.0 / self.freq)) < (0.5 / self.freq) { 1.2 } else { -0.6 }
+                        if (t % (1.0 / self.freq)) < (0.5 / self.freq) {
+                            1.2
+                        } else {
+                            -0.6
+                        }
                     })
                     .collect();
                 Tensor::from_slice(&values, (length, 1), device)?
@@ -153,7 +157,11 @@ impl AnimatedDLinOSSApp {
                     .map(|i| {
                         let t = t_start + (i as f32) * dt;
                         let sine = (2.0 * std::f32::consts::PI * self.freq * t).sin();
-                        let step = if (t % (2.0 / self.freq)) < (1.0 / self.freq) { 0.8 } else { -0.4 };
+                        let step = if (t % (2.0 / self.freq)) < (1.0 / self.freq) {
+                            0.8
+                        } else {
+                            -0.4
+                        };
                         sine + step
                     })
                     .collect();
@@ -163,14 +171,16 @@ impl AnimatedDLinOSSApp {
                 let values: Vec<f32> = (0..length)
                     .map(|i| {
                         let t = t_start + (i as f32) * dt;
-                        if (2.0 * std::f32::consts::PI * self.freq * t).sin() >= 0.0 { 1.5 } else { -1.5 }
+                        if (2.0 * std::f32::consts::PI * self.freq * t).sin() >= 0.0 {
+                            1.5
+                        } else {
+                            -1.5
+                        }
                     })
                     .collect();
                 Tensor::from_slice(&values, (length, 1), device)?
             }
-            InputMode::Noise => {
-                Tensor::randn(0.0f32, 0.9f32, (length, 1), device)?
-            }
+            InputMode::Noise => Tensor::randn(0.0f32, 0.9f32, (length, 1), device)?,
             InputMode::Chirp => {
                 let values: Vec<f32> = (0..length)
                     .map(|i| {
@@ -187,7 +197,11 @@ impl AnimatedDLinOSSApp {
                         let t = t_start + (i as f32) * dt;
                         let period = 1.0 / (self.freq * 2.0);
                         let pulse_width = period * 0.15;
-                        if (t % period) < pulse_width { 3.0 } else { 0.0 }
+                        if (t % period) < pulse_width {
+                            3.0
+                        } else {
+                            0.0
+                        }
                     })
                     .collect();
                 Tensor::from_slice(&values, (length, 1), device)?
@@ -203,7 +217,7 @@ impl AnimatedDLinOSSApp {
                 Tensor::from_slice(&values, (length, 1), device)?
             }
         };
-        
+
         Ok(signal)
     }
 
@@ -211,70 +225,79 @@ impl AnimatedDLinOSSApp {
         let now = Instant::now();
         let dt = now.duration_since(self.last_update).as_secs_f32();
         self.last_update = now;
-        
+
         // Calculate FPS
         let frame_dt = now.duration_since(self.last_frame_time).as_secs_f32();
         self.frames_per_second = 0.9 * self.frames_per_second + 0.1 * (1.0 / frame_dt.max(0.001));
         self.last_frame_time = now;
-        
+
         if self.auto_cycle {
             // Auto-cycle through modes every 4 seconds
             if self.time_step % 4.0 < dt {
                 let modes = [
-                    InputMode::Sine, InputMode::Square, InputMode::SinePlusStep,
-                    InputMode::Chirp, InputMode::Pulse, InputMode::Sweep, InputMode::Noise
+                    InputMode::Sine,
+                    InputMode::Square,
+                    InputMode::SinePlusStep,
+                    InputMode::Chirp,
+                    InputMode::Pulse,
+                    InputMode::Sweep,
+                    InputMode::Noise,
                 ];
                 let current_idx = modes.iter().position(|&m| m == self.mode).unwrap_or(0);
                 self.mode = modes[(current_idx + 1) % modes.len()];
             }
         }
-        
+
         self.time_step += dt * self.animation_speed;
-        
+
         // Generate and process new data chunk
         let chunk_size = 24;
         let start_time = Instant::now();
-        
+
         let input_chunk = self.generate_input_signal(chunk_size)?;
         let input_batch = input_chunk.reshape((1, chunk_size, 1))?;
         let output_batch = self.layer.forward(&input_batch, None)?;
-        
+
         self.processing_time_ms = start_time.elapsed().as_secs_f32() * 1000.0;
-        
+
         // Extract values
         let input_vals = input_chunk.squeeze(1)?.to_vec1::<f32>()?;
         let output_vals = output_batch.squeeze(0)?.squeeze(1)?.to_vec1::<f32>()?;
-        
+
         // Calculate cumsum for this chunk
         let cumsum_chunk = input_chunk.prefix_sum_along(0)?;
         let cumsum_vals = cumsum_chunk.squeeze(1)?.to_vec1::<f32>()?;
-        
+
         // Update ring buffers (streaming fashion)
         for i in 0..chunk_size.min(input_vals.len()) {
             self.input_history.remove(0);
             self.input_history.push(input_vals[i]);
-            
+
             self.output_history.remove(0);
             self.output_history.push(output_vals[i]);
-            
+
             self.cumsum_history.remove(0);
             self.cumsum_history.push(cumsum_vals[i]);
         }
-        
+
         // Update statistics
-        self.input_rms = (self.input_history.iter().map(|x| x * x).sum::<f32>() / self.input_history.len() as f32).sqrt();
-        self.output_rms = (self.output_history.iter().map(|x| x * x).sum::<f32>() / self.output_history.len() as f32).sqrt();
-        
+        self.input_rms = (self.input_history.iter().map(|x| x * x).sum::<f32>()
+            / self.input_history.len() as f32)
+            .sqrt();
+        self.output_rms = (self.output_history.iter().map(|x| x * x).sum::<f32>()
+            / self.output_history.len() as f32)
+            .sqrt();
+
         // FFT processing
         #[cfg(feature = "fft")]
         if self.show_fft && self.output_history.len() >= 128 {
             let fft_size = 128;
             let fft_input = Tensor::from_slice(
-                &self.output_history[self.output_history.len() - fft_size..], 
-                (fft_size,), 
-                &self.device
+                &self.output_history[self.output_history.len() - fft_size..],
+                (fft_size,),
+                &self.device,
             )?;
-            
+
             if let Ok(spec) = fft_input.fft_real_norm() {
                 if let Ok(spec_vals) = spec.to_vec1::<f32>() {
                     let pairs = spec_vals.len() / 2;
@@ -288,7 +311,7 @@ impl AnimatedDLinOSSApp {
                 }
             }
         }
-        
+
         Ok(())
     }
 }
@@ -297,14 +320,14 @@ impl App for AnimatedDLinOSSApp {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         // Request continuous repaints for animation
         ctx.request_repaint();
-        
+
         // Update animation if not paused
         if !self.paused {
             if let Err(e) = self.update_animation() {
                 eprintln!("Animation error: {e}");
             }
         }
-        
+
         // Handle keyboard input
         ctx.input(|i| {
             for event in &i.events {
@@ -325,10 +348,12 @@ impl App for AnimatedDLinOSSApp {
                         egui::Key::Num7 => self.mode = InputMode::Pulse,
                         egui::Key::Num8 => self.mode = InputMode::Sweep,
                         egui::Key::Plus | egui::Key::Equals => {
-                            self.freq = (self.freq * if modifiers.shift { 1.5 } else { 1.1 }).min(0.5);
+                            self.freq =
+                                (self.freq * if modifiers.shift { 1.5 } else { 1.1 }).min(0.5);
                         }
                         egui::Key::Minus => {
-                            self.freq = (self.freq * if modifiers.shift { 0.67 } else { 0.9 }).max(0.001);
+                            self.freq =
+                                (self.freq * if modifiers.shift { 0.67 } else { 0.9 }).max(0.001);
                         }
                         egui::Key::Space => self.paused = !self.paused,
                         egui::Key::A => self.auto_cycle = !self.auto_cycle,
@@ -345,8 +370,12 @@ impl App for AnimatedDLinOSSApp {
                                 eprintln!("Reset error: {e}");
                             }
                         }
-                        egui::Key::ArrowUp => self.animation_speed = (self.animation_speed * 1.2).min(5.0),
-                        egui::Key::ArrowDown => self.animation_speed = (self.animation_speed * 0.8).max(0.1),
+                        egui::Key::ArrowUp => {
+                            self.animation_speed = (self.animation_speed * 1.2).min(5.0)
+                        }
+                        egui::Key::ArrowDown => {
+                            self.animation_speed = (self.animation_speed * 0.8).max(0.1)
+                        }
                         egui::Key::Q | egui::Key::Escape => {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
@@ -362,26 +391,26 @@ impl App for AnimatedDLinOSSApp {
             ui.horizontal(|ui| {
                 ui.heading(RichText::new("🚀 D-LinOSS Real-Time Animation").strong());
                 ui.separator();
-                
+
                 ui.label(format!("Mode: {}", self.mode.name()));
                 ui.separator();
-                
+
                 ui.label(format!("Freq: {:.3} Hz", self.freq));
                 ui.separator();
-                
+
                 if self.paused {
                     ui.label(RichText::new("⏸ PAUSED").color(egui::Color32::RED));
                 } else {
                     ui.label(RichText::new("▶ RUNNING").color(egui::Color32::GREEN));
                 }
-                
+
                 if self.auto_cycle {
                     ui.label(RichText::new("🔄 AUTO-CYCLE").color(egui::Color32::BLUE));
                 }
             });
-            
+
             ui.separator();
-            
+
             // Statistics row
             ui.horizontal(|ui| {
                 ui.label(format!("Input RMS: {:.3}", self.input_rms));
@@ -394,9 +423,13 @@ impl App for AnimatedDLinOSSApp {
                 ui.separator();
                 ui.label(format!("Window: {} samples", self.window_size));
                 ui.separator();
-                ui.label(format!("Observer: {}/{}", self.obs_index, self.layer.a.dims1().unwrap_or(1)));
+                ui.label(format!(
+                    "Observer: {}/{}",
+                    self.obs_index,
+                    self.layer.a.dims1().unwrap_or(1)
+                ));
             });
-            
+
             ui.separator();
 
             // Control instructions
@@ -412,7 +445,7 @@ impl App for AnimatedDLinOSSApp {
                 ui.label("↑↓: Speed");
                 ui.label("Q: Quit");
             });
-            
+
             ui.separator();
 
             // Main plot area - split into columns
@@ -420,19 +453,23 @@ impl App for AnimatedDLinOSSApp {
                 // Left column: Input/Output overlay
                 columns[0].vertical(|ui| {
                     ui.heading("Input & D-LinOSS Output");
-                    
-                    let input_points: PlotPoints = self.input_history.iter()
+
+                    let input_points: PlotPoints = self
+                        .input_history
+                        .iter()
                         .enumerate()
                         .map(|(i, &y)| [i as f64, y as f64])
                         .collect::<Vec<_>>()
                         .into();
-                    
-                    let output_points: PlotPoints = self.output_history.iter()
+
+                    let output_points: PlotPoints = self
+                        .output_history
+                        .iter()
                         .enumerate()
                         .map(|(i, &y)| [i as f64, y as f64])
                         .collect::<Vec<_>>()
                         .into();
-                    
+
                     Plot::new("input_output_plot")
                         .height(250.0)
                         .allow_zoom(true)
@@ -442,13 +479,13 @@ impl App for AnimatedDLinOSSApp {
                                 Line::new(input_points)
                                     .color(self.mode.color())
                                     .name(format!("Input: {}", self.mode.name()))
-                                    .width(2.0)
+                                    .width(2.0),
                             );
                             plot_ui.line(
                                 Line::new(output_points)
                                     .color(egui::Color32::LIGHT_BLUE)
                                     .name("D-LinOSS Output")
-                                    .width(2.5)
+                                    .width(2.5),
                             );
                         });
                 });
@@ -457,13 +494,15 @@ impl App for AnimatedDLinOSSApp {
                 columns[1].vertical(|ui| {
                     if self.show_fft && !self.fft_history.is_empty() {
                         ui.heading("FFT Spectrum");
-                        
-                        let fft_points: PlotPoints = self.fft_history.iter()
+
+                        let fft_points: PlotPoints = self
+                            .fft_history
+                            .iter()
                             .enumerate()
                             .map(|(i, &y)| [i as f64, y as f64])
                             .collect::<Vec<_>>()
                             .into();
-                        
+
                         Plot::new("fft_plot")
                             .height(250.0)
                             .allow_zoom(true)
@@ -472,18 +511,20 @@ impl App for AnimatedDLinOSSApp {
                                     Line::new(fft_points)
                                         .color(egui::Color32::YELLOW)
                                         .name("Magnitude Spectrum")
-                                        .width(2.0)
+                                        .width(2.0),
                                 );
                             });
                     } else {
                         ui.heading("Cumulative Sum");
-                        
-                        let cumsum_points: PlotPoints = self.cumsum_history.iter()
+
+                        let cumsum_points: PlotPoints = self
+                            .cumsum_history
+                            .iter()
                             .enumerate()
                             .map(|(i, &y)| [i as f64, y as f64])
                             .collect::<Vec<_>>()
                             .into();
-                        
+
                         Plot::new("cumsum_plot")
                             .height(250.0)
                             .allow_zoom(true)
@@ -492,7 +533,7 @@ impl App for AnimatedDLinOSSApp {
                                     Line::new(cumsum_points)
                                         .color(egui::Color32::GREEN)
                                         .name("Cumulative Sum")
-                                        .width(2.0)
+                                        .width(2.0),
                                 );
                             });
                     }
@@ -534,22 +575,22 @@ fn stable_init_layer(layer: &mut DLinOssLayer, obs_index: usize) -> Result<()> {
 
 fn main() -> Result<()> {
     let app = AnimatedDLinOSSApp::new()?;
-    
+
     let options = NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 800.0])
             .with_title("🚀 D-LinOSS Real-Time Animation"),
         ..Default::default()
     };
-    
+
     if let Err(e) = eframe::run_native(
         "D-LinOSS Real-Time Animation",
         options,
         Box::new(|_cc| Ok::<Box<dyn App>, _>(Box::new(app))),
     ) {
-        eprintln!("GUI error: {}", e);
+        eprintln!("GUI error: {e}");
     }
-    
+
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 #[cfg(test)]
-use candle::{Device, Tensor};
-#[cfg(test)]
 use anyhow::Result;
+#[cfg(test)]
+use candle::{Device, Tensor};
 
 #[test]
 fn probe_cumsum_and_exclusive_scan() -> Result<()> {

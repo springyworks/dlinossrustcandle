@@ -20,7 +20,7 @@ pub fn rfft_magnitude(signal: &[f32]) -> Result<Vec<f32>> {
     use candle_core::{Device, Tensor};
     let device = Device::Cpu;
     let t = Tensor::from_slice(signal, signal.len(), &device)?;
-    let fft_result = t.rfft(0, true)?;  // real FFT, normalized
+    let fft_result = t.rfft(0, true)?; // real FFT, normalized
     let complex_data = fft_result.to_vec1::<f32>()?;
     // Complex interleaved: [re0, im0, re1, im1, ...]
     let mut magnitudes = Vec::with_capacity(complex_data.len() / 2);
@@ -80,7 +80,11 @@ impl SignalGen {
         let v: Vec<f32> = (0..t)
             .map(|i| {
                 let time = i as f32 * dt;
-                let freq = if duration > 0.0 { f0 + (f1 - f0) * time / duration } else { f0 };
+                let freq = if duration > 0.0 {
+                    f0 + (f1 - f0) * time / duration
+                } else {
+                    f0
+                };
                 (2.0 * std::f32::consts::PI * freq * time).sin()
             })
             .collect();

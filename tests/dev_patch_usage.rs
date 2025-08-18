@@ -15,6 +15,4 @@ fn touch_candle_notebooks_and_transformers() {
     // Use a path symbol from transformers to ensure linkage
     #[allow(unused)]
     use _ct::utils as _ct_utils;
-
-    assert!(true);
 }
