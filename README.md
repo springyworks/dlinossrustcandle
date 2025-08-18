@@ -1,5 +1,7 @@
 # dlinossrustcandle# dlinossrustcandle
 
+➡ Notebooks quickstart: see [notebooks/README.md](./notebooks/README.md)
+
 requirements: /home/rustuser/projects/rust/active/dlinossrustcandle/requirements.md
 
 > 📋 **Quick Start**: Read [requirements.md](./requirements.md) for complete development setup  

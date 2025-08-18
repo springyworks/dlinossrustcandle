@@ -1,5 +1,7 @@
 # D-LinOSS Notebooks
 
+⬅ Back to project overview: [root README](../README.md)
+
 This folder contains a small glue crate (`dlinoss-notebooks`) designed for a smooth evcxr/Jupyter experience with a single dependency per notebook. The crate re-exports:
 
 - Candle's notebook helpers (`candle_notebooks`)
