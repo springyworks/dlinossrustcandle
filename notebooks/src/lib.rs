@@ -91,3 +91,76 @@ impl SignalGen {
         Ok(Tensor::from_slice(&v, (1, t, 1), &dev)?)
     }
 }
+
+#[cfg(feature = "gui")]
+pub mod realtime_gui {
+    use super::*;
+    use eframe::{egui, App, Frame, NativeOptions};
+    use egui_plot::{Line, Plot, PlotPoints};
+    use std::time::Instant;
+
+    struct TinyApp {
+        device: candle_core::Device,
+        layer: DLinOssLayer,
+        t: f32,
+        input: Vec<f32>,
+        output: Vec<f32>,
+        last: Instant,
+    }
+
+    impl TinyApp {
+        fn new() -> Result<Self> {
+            let device = candle_core::Device::Cpu;
+            let cfg = DLinOssLayerConfig { state_dim: 16, input_dim: 1, output_dim: 1, delta_t: 0.01, dtype: candle_core::DType::F32 };
+            let layer = DLinOssLayer::new(cfg, &device)?;
+            Ok(Self { device, layer, t: 0.0, input: vec![0.0; 256], output: vec![0.0; 256], last: Instant::now() })
+        }
+        fn step(&mut self) -> Result<()> {
+            let now = Instant::now();
+            let dt = (now - self.last).as_secs_f32().clamp(0.0, 0.05);
+            self.last = now;
+            self.t += dt;
+            // generate 24 new samples of a swept sine for fun
+            let len = 24usize;
+            let dt_samp = 0.01f32;
+            let values: Vec<f32> = (0..len).map(|i| {
+                let tt = self.t + i as f32 * dt_samp;
+                let freq = 0.5 + 0.5 * (0.5 * tt).sin();
+                (2.0 * std::f32::consts::PI * freq * tt).sin()
+            }).collect();
+            let x = candle_core::Tensor::from_slice(&values, (1, len, 1), &self.device)?;
+            let y = self.layer.forward(&x, None)?;
+            let xin = x.squeeze(0)?.squeeze(1)?.to_vec1::<f32>()?;
+            let yout = y.squeeze(0)?.squeeze(1)?.to_vec1::<f32>()?;
+            for i in 0..len {
+                self.input.remove(0); self.input.push(xin[i]);
+                self.output.remove(0); self.output.push(yout[i]);
+            }
+            Ok(())
+        }
+    }
+
+    impl App for TinyApp {
+        fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+            ctx.request_repaint();
+            if let Err(e) = self.step() { eprintln!("step error: {e}"); }
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.heading("D-LinOSS Realtime Demo");
+                let in_pts: PlotPoints = self.input.iter().enumerate().map(|(i,&y)| [i as f64, y as f64]).collect::<Vec<_>>().into();
+                let out_pts: PlotPoints = self.output.iter().enumerate().map(|(i,&y)| [i as f64, y as f64]).collect::<Vec<_>>().into();
+                Plot::new("io").height(260.0).show(ui, |p| {
+                    p.line(Line::new(in_pts).name("input").color(egui::Color32::LIGHT_GREEN));
+                    p.line(Line::new(out_pts).name("output").color(egui::Color32::LIGHT_BLUE));
+                });
+            });
+        }
+    }
+
+    /// Launch a minimal realtime egui window animating DLinOSS input/output in place.
+    pub fn run_realtime_demo() -> Result<()> {
+        let app = TinyApp::new()?;
+        let opts = NativeOptions::default();
+        eframe::run_native("DLinOSS Realtime", opts, Box::new(|_| Ok::<Box<dyn App>, anyhow::Error>(Box::new(app))))
+            .map_err(|e| anyhow::anyhow!("GUI error: {e}"))
+    }
+}

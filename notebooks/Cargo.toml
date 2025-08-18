@@ -8,6 +8,7 @@ license = "MIT OR Apache-2.0"
 [features]
 default = []
 fft = ["dlinossrustcandle/fft", "candle-core/fft"]
+gui = ["dep:eframe", "dep:egui_plot"]
 
 [dependencies]
 # Use local Candle notebooks utilities (path relative to this file)
@@ -17,3 +18,5 @@ dlinossrustcandle = { path = ".." }
 # For FFT helper (candle-core)
 candle-core = { path = "../../../from_github/candle/candle-core" }
 anyhow = "1.0"
+eframe = { version = "0.28", optional = true }
+egui_plot = { version = "0.28", optional = true }
