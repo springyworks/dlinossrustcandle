@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "dlinoss": {
+      "command": "cargo",
+      "args": ["run", "-p", "xtask", "--", "mcp-serve", "--fft"],
+      "cwd": "${workspaceFolder}",
+  "env": { "DLINOSS_MCP_READY_FILE": "/tmp/dlinoss_mcp_ready" }
+    }
+  }
+}

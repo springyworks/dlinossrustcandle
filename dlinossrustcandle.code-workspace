@@ -10,6 +10,20 @@
 			"activityBar.background": "#2B294C",
 			"titleBar.activeBackground": "#3C3A6B",
 			"titleBar.activeForeground": "#FCFCFD"
-		}
+		},
+		"chat.mcp.discovery.enabled": {
+			"cursor-workspace": true
+		},
+		"mcpServerRunner.servers": [
+					{
+						"name": "dlinoss_mcp_ready",
+						"protocol": "stdio",
+						"version": "1.0.0",
+						"workspacePath": "${workspaceFolder}",
+						"serverType": "local",
+						"description": "Runs as a subprocess using stdio (no TCP/HTTP). Configure clients to use stdin/stdout JSON-RPC."
+					}
+
+		]
 	}
 }

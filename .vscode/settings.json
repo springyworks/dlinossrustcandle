@@ -23,19 +23,35 @@
         "**/.ipynb_checkpoints/**": true,
         "/media/rustuser/onSSD/**": true
     },
-   
-
-    // Control which features rust-analyzer enables when resolving the crate graph.
-    // This mirrors `cargo check --features "..."` for analysis.
-    // You can list multiple crates and feature sets.
-    // rust-analyzer.cargo.features must be an ARRAY of feature names (previously mis-specified as an object).
-    // These features will be passed to cargo for the linked root crate.
-    "rust-analyzer.cargo.features": ["fft", "egui", "audio"],
-
-    // Disable automatic workspace discovery so only the explicitly linked root Cargo.toml is analyzed.
-    "rust-analyzer.cargo.workspace": false,
-
-    // Speed up analysis by skipping build scripts and proc macros unless needed.
-    "rust-analyzer.cargo.buildScripts.enable": false,
-    "rust-analyzer.procMacro.enable": true
+    
+    // MCP Server Configuration for D-LinOSS simulation
+    "mcp.servers": {
+        "dlinoss-simulation": {
+            "command": "cargo",
+            "args": ["run", "-p", "xtask", "--", "mcp-serve", "--fft"],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "DLINOSS_MCP_READY_FILE": "/tmp/dlinoss_mcp_ready"
+            },
+            "description": "D-LinOSS Damped Linear Oscillatory State-Space simulation server"
+        }
+    },
+    
+    // Language model tools configuration
+    "github.copilot.enable": {
+        "*": true,
+        "yaml": false,
+        "plaintext": false,
+        "markdown": true
+    },
+    
+    // Enable MCP integration with language models
+    "languageModel.mcp.enable": true,
+    "languageModel.mcp.servers": [
+        "dlinoss-simulation"
+    ],
+    
+    // Copilot chat configuration for MCP tools
+    "github.copilot.chat.mcp.enable": true,
+    "github.copilot.chat.tools.enable": true
 }

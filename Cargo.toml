@@ -1,15 +1,14 @@
 [workspace]
 members = [
 	".",
+	"00DLinossrustPLAYGROUND",
 	"crates/dlinoss-augment",
 	"crates/dlinoss-display", 
 	"crates/dlinoss-helpers",
+	"crates/dlinoss-mcp",
 	"notebooks",  # dlinoss-notebooks glue crate
 	"notebooks/jupytext-experiment-subcrate",
 	"xtask",
-]
-exclude = [
-	"TEMPTEST/candle_probe",
 ]
 
 [workspace.dependencies]
@@ -23,28 +22,37 @@ description = "DLiNOSS (Damped Linear Oscillatory State-Space) layer implemented
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-# Candle deps (versioned), overridden via [patch.crates-io] below to local paths
-candle = { package = "candle-core", version = "0.9.1", default-features = false }
-candle-nn = { version = "0.9.1", default-features = false }
+# Candle deps: switch to direct path dependencies to avoid noisy unused patch warnings.
+# If you want to revert to crates.io versions, replace these with the commented versioned entries below.
+# candle = { package = "candle-core", version = "0.9.1", default-features = false }  # previous name
+# candle-nn = { version = "0.9.1", default-features = false }
+# Rename local Candle workspace alias to `candlekos` to emphasize local (KOS) checkout.
+candlekos = { package = "candle-core", path = "/home/rustuser/projects/rust/from_github/candle/candle-core", default-features = false }
+candle-nn = { path = "/home/rustuser/projects/rust/from_github/candle/candle-nn", default-features = false }
 anyhow = { version = "1", features = ["backtrace"] }
 dlinoss-augment = { path = "crates/dlinoss-augment" }
 dlinoss-display = { path = "crates/dlinoss-display", optional = true }
 dlinoss-helpers = { path = "crates/dlinoss-helpers", optional = true }
+# Dummy optional dependency to mark upstream candle-notebooks patch as 'used' and silence
+# the Cargo warning. This crate is not actually imported by code. Enable the
+# feature `silence-upstream-patch` only if you want Cargo to count it as used.
+candle-notebooks = { path = "/home/rustuser/projects/rust/from_github/candle/0aEXPLORATION/research/notebooks/candle_notebooks", optional = true }
+ctrlc = "3.4.7"
 
 [features]
 default = []
 # Pass-through optional accelerators (enable when building the crate, e.g. `--features cuda`)
-accelerate = ["candle/accelerate", "candle-nn/accelerate"]
-cuda = ["candle/cuda", "candle-nn/cuda"]
-cudnn = ["candle/cudnn", "candle-nn/cudnn"]
-mkl = ["candle/mkl", "candle-nn/mkl"]
-metal = ["candle/metal", "candle-nn/metal"]
+accelerate = ["candlekos/accelerate", "candle-nn/accelerate"]
+cuda = ["candlekos/cuda", "candle-nn/cuda"]
+cudnn = ["candlekos/cudnn", "candle-nn/cudnn"]
+mkl = ["candlekos/mkl", "candle-nn/mkl"]
+metal = ["candlekos/metal", "candle-nn/metal"]
 
 # Experimental execution features for this crate (off by default)
 # parallel-scan: enable planned parallel scan path (requires additional implementation)
 parallel-scan = []
 # fft: enable Candle FFT support; maps through to candle-core's `fft` feature
-fft = ["candle/fft", "dlinoss-augment/fft", "dlinoss-display/fft"]
+fft = ["candlekos/fft", "dlinoss-augment/fft", "dlinoss-display/fft"]
 # UI feature passthroughs
 egui = ["dep:dlinoss-display", "dlinoss-display/egui"]
 etui = ["dep:dlinoss-display", "dlinoss-display/etui"]
@@ -52,6 +60,14 @@ minifb = ["dep:dlinoss-display", "dlinoss-display/minifb"]
 cli = ["dep:dlinoss-helpers"]
 augment = ["dlinoss-augment/augment"]
 augment-expr = ["dlinoss-augment/augment-expr"]
+# Silence feature to acknowledge upstream candle-notebooks patch; no runtime effect.
+silence-upstream-patch = ["dep:candle-notebooks"]
+
+# Test / QA oriented feature gates (non-production)
+# large-tests: enables long-running stress & scalability tests (see tests/dlinoss_stress.rs)
+# freq-tests: reserved for extended/longer frequency-domain diagnostics (current basic test always runs)
+large-tests = []
+freq-tests = []
 
 [dev-dependencies]
 eframe = { version = "0.28", default-features = false, features = ["glow"] }
@@ -62,9 +78,9 @@ crossterm = { version = "0.27" }
 ## Same for candle-transformers to satisfy upstream patch logs when present
 candle-transformers = { version = "0.9.1" }
 
-[patch.crates-io]
-candle-core = { path = "/home/rustuser/projects/rust/from_github/candle/candle-core" }
-candle-nn = { path = "/home/rustuser/projects/rust/from_github/candle/candle-nn" }
-## Keep these in sync with your local Candle checkout so cargo doesn't warn about unused patches
-candle-transformers = { path = "/home/rustuser/projects/rust/from_github/candle/candle-transformers" }
-candle_tensor_augment = { path = "/home/rustuser/projects/rust/from_github/candle/0aEXPLORATION/candle_tensor_augment" }
+# Former patch section retained (commented) for reference; direct path deps above silence the unused patch warnings.
+#[patch.crates-io]
+# candle-core = { path = "/home/rustuser/projects/rust/from_github/candle/candle-core" }
+# candle-nn = { path = "/home/rustuser/projects/rust/from_github/candle/candle-nn" }
+# candle-transformers = { path = "/home/rustuser/projects/rust/from_github/candle/candle-transformers" }
+# candle_tensor_augment = { path = "/home/rustuser/projects/rust/from_github/candle/0aEXPLORATION/candle_tensor_augment" }

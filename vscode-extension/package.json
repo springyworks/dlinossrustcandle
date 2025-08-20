@@ -1,0 +1,30 @@
+{
+  "name": "dlinoss-mcp-client",
+  "displayName": "D-LinOSS MCP Client",
+  "description": "Prototype VS Code extension to interact with the D-LinOSS MCP (JSON-RPC) server over stdio or FIFO.",
+  "version": "0.0.1",
+  "engines": { "vscode": "+1.85.0" },
+  "activationEvents": [
+    "onCommand:dlinoss.mcp.start",
+    "onCommand:dlinoss.mcp.step",
+    "onCommand:dlinoss.mcp.fft"
+  ],
+  "main": "out/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "dlinoss.mcp.start", "title": "D-LinOSS: Start MCP Session" },
+      { "command": "dlinoss.mcp.step", "title": "D-LinOSS: Step Simulation" },
+      { "command": "dlinoss.mcp.fft", "title": "D-LinOSS: Fetch FFT" }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "tsc -p ./",
+    "watch": "tsc -w -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "$id": "https://local.dlinoss/schema/mcp-launch-config.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "D-LinOSS MCP Launch Config",
+  "type": "object",
+  "required": ["servers"],
+  "properties": {
+    "servers": {
+      "type": "object",
+      "description": "Map of server identifiers to their launch definitions",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["command"],
+        "properties": {
+          "command": { "type": "string", "description": "Executable to launch" },
+          "args": { "type": "array", "items": { "type": "string" } },
+          "cwd": { "type": "string" },
+          "env": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "transport": {
+            "type": "object",
+            "properties": {
+              "stdio": { "type": "object", "description": "Indicates stdio transport" }
+            },
+            "additionalProperties": true
+          },
+          "restart": { "type": "string", "enum": ["never", "on-failure", "always"], "default": "on-failure" },
+          "description": { "type": "string" },
+            "tags": { "type": "array", "items": { "type": "string" } },
+            "healthCheck": {
+              "type": "object",
+              "required": ["command"],
+              "properties": {
+                "command": { "type": "string" },
+                "expectRegex": { "type": "string" },
+                "timeoutMs": { "type": "integer", "minimum": 1 }
+              }
+            }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

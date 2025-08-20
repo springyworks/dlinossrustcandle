@@ -1,8 +1,8 @@
 //! D-LinOSS Notebooks - Single Dependency Re-exports
-//! 
+//!
 //! This crate re-exports the main D-LinOSS API with all necessary dependencies
 //! so notebooks can use a single `:dep` line for complete functionality.
-//! 
+//!
 //! Usage in evcxr:
 //! ```
 //! :dep dlinoss-notebooks = { path = ".", features = ["fft", "gui", "audio"] }
@@ -11,11 +11,13 @@
 
 // Re-export all Candle core functionality for tensor operations from the root crate
 pub use dlinossrustcandle::{
-    // Re-export candle types that the root crate already imports from your local candlekos
-    Device, DType, Tensor,
-    
     // Core D-LinOSS types
-    DLinOssLayer, DLinOssLayerConfig,
+    DLinOssLayer,
+    DLinOssLayerConfig,
+    DType,
+    // Re-export candle types that the root crate already imports from your local candlekos
+    Device,
+    Tensor,
 };
 
 // Re-export scan operations from the root crate's augment module
@@ -26,7 +28,7 @@ pub use dlinossrustcandle::TensorScanExt;
 pub use dlinossrustcandle::TensorFftExt;
 
 // Re-export essential utilities
-pub use anyhow::{Result, Error as AnyhowError, bail, ensure, Context};
+pub use anyhow::{bail, ensure, Context, Error as AnyhowError, Result};
 // Also expose an `anyhow` module for convenience in notebooks (e.g., `use dlinoss_notebooks::anyhow`).
 pub mod anyhow {
     pub use anyhow::*;
@@ -40,7 +42,7 @@ pub use html_escape;
 #[cfg(feature = "gui")]
 pub use eframe;
 
-#[cfg(feature = "gui")]  
+#[cfg(feature = "gui")]
 pub use egui_plot;
 
 // Re-export display helpers from the root crate (egui dual-pane)
@@ -70,7 +72,10 @@ pub mod audio_utils {
             .map(|c| c.with_max_sample_rate())
             .unwrap_or_else(|| {
                 // fallback to first config
-                supported.next().expect("no output configs available").with_max_sample_rate()
+                supported
+                    .next()
+                    .expect("no output configs available")
+                    .with_max_sample_rate()
             })
             .config();
         // Capture total length before moving the buffer into the closure
@@ -316,24 +321,27 @@ impl SignalGen {
 /// Run a simple D-LinOSS experiment for testing
 pub fn simple_dlinoss_experiment() -> Result<()> {
     println!("🧪 D-LinOSS Simple Experiment");
-    
+
     // Create device and basic configuration
     let device = cpu_device();
     let config = DLinOssLayerConfig::default();
-    
+
     // Create D-LinOSS layer
-    let mut layer = DLinOssLayer::new(config, &device)?;
-    
-    // Generate simple test signal  
+    let layer = DLinOssLayer::new(config, &device)?;
+
+    // Generate simple test signal
     let test_signal = SignalGen::sine(100, 10.0, 0.01)?;
-    
+
     // Process through layer
     let output = layer.forward(&test_signal, None)?;
-    
+
     println!("✅ Successfully created and ran D-LinOSS layer!");
-    println!("📊 Input shape: {:?}, Output shape: {:?}", 
-             test_signal.shape(), output.shape());
-    
+    println!(
+        "📊 Input shape: {:?}, Output shape: {:?}",
+        test_signal.shape(),
+        output.shape()
+    );
+
     Ok(())
 }
 

@@ -1,10 +1,10 @@
 use anyhow::Result;
-use candle::Tensor;
+use candlekos::Tensor;
 use dlinossrustcandle::TensorScanExt;
 
 #[test]
 fn test_prefix_sum_along_1d() -> Result<()> {
-    let dev = candle::Device::Cpu;
+    let dev = candlekos::Device::Cpu;
     let x = Tensor::new(&[1f32, 2., 3., 4.], &dev)?;
     let y = x.prefix_sum_along(0)?;
     let v = y.to_vec1::<f32>()?;
@@ -14,7 +14,7 @@ fn test_prefix_sum_along_1d() -> Result<()> {
 
 #[test]
 fn test_exclusive_prefix_sum_along_1d() -> Result<()> {
-    let dev = candle::Device::Cpu;
+    let dev = candlekos::Device::Cpu;
     let x = Tensor::new(&[1f32, 2., 3., 4.], &dev)?;
     let y = x.exclusive_prefix_sum_along(0)?;
     let v = y.to_vec1::<f32>()?;
@@ -24,7 +24,7 @@ fn test_exclusive_prefix_sum_along_1d() -> Result<()> {
 
 #[test]
 fn test_prefix_sum_time_btd() -> Result<()> {
-    let dev = candle::Device::Cpu;
+    let dev = candlekos::Device::Cpu;
     // [B=1, T=4, D=2]
     let data: [f32; 8] = [1., 2., 3., 4., 5., 6., 7., 8.];
     let x = Tensor::from_slice(&data, (1, 4, 2), &dev)?;
@@ -44,7 +44,7 @@ fn test_prefix_sum_time_btd() -> Result<()> {
 
 #[test]
 fn test_exclusive_prefix_sum_time_btd() -> Result<()> {
-    let dev = candle::Device::Cpu;
+    let dev = candlekos::Device::Cpu;
     // [B=1, T=4, D=2]
     let data: [f32; 8] = [1., 2., 3., 4., 5., 6., 7., 8.];
     let x = Tensor::from_slice(&data, (1, 4, 2), &dev)?;

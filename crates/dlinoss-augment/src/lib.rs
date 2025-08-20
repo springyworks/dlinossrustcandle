@@ -1,7 +1,7 @@
 //! dlinoss-augment: extension traits that wrap Candle's scan/fft ops.
 
 use anyhow::Result;
-use candle::Tensor;
+use candlekos::Tensor;
 
 pub trait TensorScanExt {
     /// Inclusive prefix-sum along axis: cumsum

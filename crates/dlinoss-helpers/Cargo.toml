@@ -8,8 +8,9 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
-candle = { package = "candle-core", version = "0.9.1", default-features = false }
+# Local Candle checkout path (keep in sync with workspace root)
+candlekos = { package = "candle-core", path = "/home/rustuser/projects/rust/from_github/candle/candle-core", default-features = false }
 
 [features]
 default = []
-fft = ["candle/fft"]
+fft = ["candlekos/fft"]

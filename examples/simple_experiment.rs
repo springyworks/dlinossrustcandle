@@ -1,5 +1,5 @@
 use anyhow::Result;
-use candle::{DType, Device, Tensor};
+use candlekos::{DType, Device, Tensor};
 use dlinossrustcandle::{DLinOssLayer, DLinOssLayerConfig};
 
 fn make_signals(t: usize) -> Result<Vec<(&'static str, Tensor)>> {

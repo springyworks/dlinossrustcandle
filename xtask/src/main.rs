@@ -101,6 +101,39 @@ enum Cmd {
         #[arg(long)]
         extended: bool,
     },
+    /// Assemble PNG frames in images_store/SHOWCASE into an animated GIF
+    Gif {
+        /// Output gif path (default: images_store/SHOWCASE/anim.gif)
+        #[arg(long)]
+        out: Option<String>,
+        /// Frame delay in hundredths of a second (default 4 -> 25fps)
+        #[arg(long, default_value_t = 4)]
+        delay_cs: u16,
+        /// Max frames (default all)
+        #[arg(long)]
+        max_frames: Option<usize>,
+    },
+    /// Run a scripted demonstration against the dlinoss-mcp server (stdin/stdout JSON-RPC)
+    McpDemo {
+        /// Enable FFT feature when running server
+        #[arg(long)]
+        fft: bool,
+        /// Steps to advance
+        #[arg(long, default_value_t = 300)]
+        steps: usize,
+        /// FFT size
+        #[arg(long, default_value_t = 256)]
+        fft_size: usize,
+    },
+    /// Run the MCP server persistently (serve mode) and forward stdio
+    McpServe {
+        /// Enable FFT feature when running server
+        #[arg(long)]
+        fft: bool,
+        /// Optional readiness file path to write when server starts
+        #[arg(long)]
+        ready_file: Option<String>,
+    },
 }
 
 #[derive(Debug, Parser)]
@@ -121,7 +154,11 @@ fn main() -> Result<()> {
     let sh = Shell::new()?;
     match args.cmd {
         Cmd::Ci => {
-            cmd!(sh, "cargo fmt --all").run()?;
+            // Limit formatting to this workspace only. Using --all caused rustfmt to attempt
+            // traversal of upstream Candle workspace path dependencies, one of which referenced
+            // a removed experimental crate (candle_tensor_elementprograms) leading to a manifest error.
+            // Plain `cargo fmt` respects the current workspace members and skips external path deps.
+            cmd!(sh, "cargo fmt").run()?;
             // Avoid --all-features to prevent pulling macOS-only deps (e.g., metal/objc) on Linux.
             cmd!(sh, "cargo clippy --all-targets -- -D warnings").run()?;
             cmd!(sh, "cargo test").run()?;
@@ -136,7 +173,8 @@ fn main() -> Result<()> {
             cmd!(sh, "cargo test").run()?;
         }
         Cmd::Fmt => {
-            cmd!(sh, "cargo fmt --all").run()?;
+            // See comment in Ci: keep formatting scoped to local workspace members.
+            cmd!(sh, "cargo fmt").run()?;
         }
         Cmd::Clippy => {
             // Prefer workspace-wide clippy without --all-features to avoid platform-only deps.
@@ -228,6 +266,52 @@ fn main() -> Result<()> {
         }
         Cmd::Comprehensive { extended } => {
             comprehensive_test(&sh, extended)?;
+        }
+        Cmd::Gif {
+            out,
+            delay_cs,
+            max_frames,
+        } => {
+            assemble_gif(out, delay_cs, max_frames)?;
+        }
+        Cmd::McpDemo {
+            fft,
+            steps,
+            fft_size,
+        } => {
+            mcp_demo(fft, steps, fft_size)?;
+        }
+        Cmd::McpServe { fft, ready_file } => {
+            use std::io::{BufRead, BufReader};
+            use std::process::{Command, Stdio};
+            let mut cmd = Command::new("cargo");
+            cmd.arg("run").arg("-p").arg("dlinoss-mcp");
+            if fft {
+                cmd.arg("--features").arg("fft");
+            }
+            if let Some(path) = ready_file.clone() {
+                cmd.env("DLINOSS_MCP_READY_FILE", &path);
+            }
+            cmd.stdin(Stdio::inherit())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit());
+            eprintln!("[xtask] launching dlinoss-mcp (serve mode)...");
+            let mut child = cmd.spawn()?;
+            let stdout = child.stdout.take().unwrap();
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = line?;
+                println!("{}", line);
+                if line.contains("\"mcp_ready\":true") {
+                    eprintln!(
+                        "[xtask] MCP server ready (stdio). Attach a client using stdin/stdout JSON-RPC lines."
+                    );
+                }
+            }
+            let status = child.wait()?;
+            if !status.success() {
+                anyhow::bail!("mcp server exited with status {status}");
+            }
         }
     }
     Ok(())
@@ -1108,4 +1192,144 @@ fn comprehensive_test(sh: &Shell, extended: bool) -> Result<()> {
             passed_count
         )
     }
+}
+
+fn assemble_gif(out: Option<String>, delay_cs: u16, max_frames: Option<usize>) -> Result<()> {
+    use gif::{Encoder, Frame, Repeat};
+    use image::GenericImageView;
+    use std::fs::File;
+    let dir = PathBuf::from("images_store/SHOWCASE");
+    anyhow::ensure!(dir.exists(), "{} does not exist", dir.display());
+    let mut frames: Vec<_> = fs::read_dir(&dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("png"))
+        .collect();
+    frames.sort();
+    if frames.is_empty() {
+        anyhow::bail!("No PNG frames found in {}", dir.display());
+    }
+    if let Some(m) = max_frames {
+        if frames.len() > m {
+            frames.truncate(m);
+        }
+    }
+    let first = image::open(&frames[0])?;
+    let (w, h) = first.dimensions();
+    let out_path = out.unwrap_or_else(|| format!("{}/anim.gif", dir.display()));
+    let mut file = File::create(&out_path)?;
+    let mut encoder = Encoder::new(&mut file, w as u16, h as u16, &[])?;
+    encoder.set_repeat(Repeat::Infinite)?;
+    for (idx, path) in frames.iter().enumerate() {
+        let img = if idx == 0 {
+            first.clone()
+        } else {
+            image::open(path)?
+        };
+        let mut frame = Frame::default();
+        frame.width = w as u16;
+        frame.height = h as u16;
+        frame.delay = delay_cs; // hundredths of second
+        // Convert to RGBA then to indexed? Simpler: use RGBA -> encode as RGBA (gif encoder will quantize)
+        let rgba = img.to_rgba8();
+        frame.buffer = rgba.into_raw().into();
+        encoder.write_frame(&frame)?;
+    }
+    println!("GIF written to {out_path}");
+    Ok(())
+}
+
+fn mcp_demo(fft: bool, steps: usize, fft_size: usize) -> Result<()> {
+    use serde_json::json;
+    use std::io::{BufRead, Write};
+    use std::process::{Command, Stdio};
+    println!("🚀 Starting dlinoss-mcp demo (fft={fft})");
+    // Construct cargo run command for the mcp server
+    let mut cmd = Command::new("cargo");
+    cmd.arg("run").arg("-p").arg("dlinoss-mcp");
+    if fft {
+        cmd.arg("--features").arg("fft");
+    }
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let mut child_stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to take stdin"))?;
+    let child_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to take stdout"))?;
+    let mut lines = std::io::BufReader::new(child_stdout).lines();
+
+    // Helper closure to send JSON and read one line
+    let mut send = |val: serde_json::Value| -> Result<serde_json::Value> {
+        let line = serde_json::to_string(&val)?;
+        writeln!(child_stdin, "{}", line)?;
+        child_stdin.flush()?;
+        let resp_line = lines
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no response"))??;
+        let resp: serde_json::Value = serde_json::from_str(&resp_line)?;
+        Ok(resp)
+    };
+
+    // 1. ping
+    let ping = send(json!({"jsonrpc":"2.0","id":1,"method":"dlinoss.ping","params":{}}))?;
+    println!("➡ ping -> {}", ping);
+    // 2. init
+    let init = send(
+        json!({"jsonrpc":"2.0","id":2,"method":"dlinoss.init","params":{"state_dim":16,"input_dim":2,"output_dim":3,"t_len":10000}}),
+    )?;
+    println!("➡ init -> {}", init);
+    // 3. step
+    let step =
+        send(json!({"jsonrpc":"2.0","id":3,"method":"dlinoss.step","params":{"steps":steps}}))?;
+    println!("➡ step({steps}) -> {}", step);
+    // 4. getState rings
+    let rings = send(
+        json!({"jsonrpc":"2.0","id":4,"method":"dlinoss.getState","params":{"which":"rings","limit":2048}}),
+    )?;
+    if let Some(err) = rings.get("error") {
+        println!("➡ rings error: {}", err);
+    } else {
+        let ring_len = rings
+            .pointer("/result/data")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        println!("➡ rings -> len={ring_len}");
+        // Adjust FFT size if needed
+        let mut req_fft = fft_size.min(ring_len.max(0));
+        if req_fft == 0 {
+            println!("➡ fft skipped (no samples yet)");
+        } else {
+            // ensure even and at least 16
+            if req_fft % 2 == 1 {
+                req_fft -= 1;
+            }
+            if req_fft < 16 {
+                req_fft = 16.min(ring_len);
+            }
+            let fft_req =
+                json!({"jsonrpc":"2.0","id":5,"method":"dlinoss.getFft","params":{"size":req_fft}});
+            let fft_resp = send(fft_req)?;
+            if let Some(err) = fft_resp.get("error") {
+                println!("➡ fft error: {}", err);
+            } else {
+                let spec_len = fft_resp
+                    .pointer("/result/spectrum")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                println!("➡ fft(size={req_fft}) -> spectrum_len={spec_len}");
+            }
+        }
+    }
+
+    // Shutdown: drop stdin so server exits
+    drop(child_stdin);
+    let _ = child.wait();
+    println!("✅ MCP demo complete");
+    Ok(())
 }

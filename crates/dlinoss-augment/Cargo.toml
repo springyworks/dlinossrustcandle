@@ -6,12 +6,14 @@ description = "Trait-based helpers for D-LinOSS: scan/FFT conveniences built on 
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-candle = { package = "candle-core", version = "0.9.1", default-features = false }
+# Use local Candle checkout paths (aligned with root Cargo.toml) to avoid unused patch warnings.
+candlekos = { package = "candle-core", path = "/home/rustuser/projects/rust/from_github/candle/candle-core", default-features = false }
 anyhow = "1"
-candle_tensor_augment = { version = "0.1.0", optional = true }
+# Local experimental augment crate path (not published on crates.io)
+candle_tensor_augment = { path = "/home/rustuser/projects/rust/from_github/candle/0aEXPLORATION/candle_tensor_augment", optional = true }
 
 [features]
 default = []
-fft = ["candle/fft"]
+fft = ["candlekos/fft"]
 augment = ["dep:candle_tensor_augment"]
 augment-expr = ["augment", "candle_tensor_augment/expr"]

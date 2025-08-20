@@ -5,7 +5,7 @@
 //! These are useful for associative operations like prefix-sums.
 
 use anyhow::Result;
-use candle::Tensor;
+use candlekos::Tensor;
 
 /// Placeholder for a parallel-scan compatible representation of the recurrence.
 #[derive(Debug, Clone)]

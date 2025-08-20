@@ -1,5 +1,5 @@
 use anyhow::Result;
-use candle::{DType, Device, Tensor};
+use candlekos::{DType, Device, Tensor};
 #[cfg(feature = "fft")]
 use dlinossrustcandle::TensorFftExt;
 use dlinossrustcandle::{DLinOssLayer, DLinOssLayerConfig, TensorScanExt};

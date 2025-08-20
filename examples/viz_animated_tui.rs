@@ -2,7 +2,7 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use candle::{DType, Device, Tensor};
+use candlekos::{DType, Device, Tensor};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ratatui::Terminal;

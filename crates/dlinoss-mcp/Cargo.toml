@@ -1,0 +1,16 @@
+[package]
+name = "dlinoss-mcp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+dlinossrustcandle = { path = "../.." }
+candlekos = { package = "candle-core", path = "/home/rustuser/projects/rust/from_github/candle/candle-core", default-features = false }
+# Optional FFT for spectral queries
+[features]
+default = []
+fft = ["dlinossrustcandle/fft", "candlekos/fft"]

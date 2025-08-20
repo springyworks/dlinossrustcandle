@@ -5,7 +5,7 @@
 //! - `minifb`: minimal windowing stub.
 
 use anyhow::Result;
-use candle::Tensor;
+use candlekos::Tensor;
 #[allow(unused_imports)]
 use dlinoss_augment::TensorScanExt;
 

@@ -7,7 +7,8 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1"
-candle = { package = "candle-core", version = "0.9.1", default-features = false }
+# Local Candle checkout path (keep in sync with workspace root)
+candlekos = { package = "candle-core", path = "/home/rustuser/projects/rust/from_github/candle/candle-core", default-features = false }
 dlinoss-augment = { path = "../dlinoss-augment" }
 
 # Optional UIs
@@ -19,7 +20,7 @@ egui = ["dep:eframe", "dep:egui", "dep:egui_plot"]
 etui = ["dep:ratatui", "dep:crossterm"]
 # minifb window
 minifb = ["dep:minifb"]
-fft = ["dlinoss-augment/fft", "candle/fft"]
+fft = ["dlinoss-augment/fft", "candlekos/fft"]
 
 [dependencies.eframe]
 version = "0.28"

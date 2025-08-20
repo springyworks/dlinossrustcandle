@@ -1,0 +1,19 @@
+{
+  "//": "Extended (non-strict) MCP server config retained for reference. Not used directly by runner.",
+  "servers": {
+    "dlinoss": {
+      "command": "cargo",
+      "args": ["run", "-p", "xtask", "--", "mcp-serve", "--fft"],
+      "cwd": "${workspaceFolder}",
+      "env": { "DLINOSS_MCP_READY_FILE": "/tmp/dlinoss_mcp_ready" },
+      "transport": { "stdio": {} },
+      "restart": "on-failure",
+      "description": "D-LinOSS simulation + FFT MCP server (stdio JSON-RPC)",
+      "tags": ["dlinoss", "simulation", "fft"],
+      "healthCheck": {
+        "command": "echo {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"dlinoss.ping\",\"params\":{}}",
+        "expectRegex": "\\\"ok\\\":true"
+      }
+    }
+  }
+}

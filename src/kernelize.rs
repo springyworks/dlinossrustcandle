@@ -1,7 +1,7 @@
 //! Experimental kernelization (FFT) stubs. Not implemented yet.
 
 use anyhow::{Result, bail};
-use candle::Tensor;
+use candlekos::Tensor;
 
 /// Generate an impulse response kernel (stub).
 #[cfg(feature = "fft")]

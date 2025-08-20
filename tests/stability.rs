@@ -1,5 +1,5 @@
 use anyhow::Result;
-use candle::{DType, Device, Tensor};
+use candlekos::{DType, Device, Tensor};
 use dlinossrustcandle::{DLinOssLayer, DLinOssLayerConfig};
 
 #[test]
