@@ -5,12 +5,12 @@ use anyhow::Result;
 use candle::{DType, Device, Tensor};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line as TxtLine, Span};
 use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph};
-use ratatui::Terminal;
 
 #[cfg(feature = "fft")]
 use dlinossrustcandle::TensorFftExt;
@@ -191,12 +191,14 @@ fn main() -> Result<()> {
 
             // Left (model output)
             let data_left: Vec<(f64, f64)> = app.left.clone();
-            let datasets_left = vec![Dataset::default()
-                .name("y[t]")
-                .marker(ratatui::symbols::Marker::Dot)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(Color::Cyan))
-                .data(&data_left)];
+            let datasets_left = vec![
+                Dataset::default()
+                    .name("y[t]")
+                    .marker(ratatui::symbols::Marker::Dot)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(Color::Cyan))
+                    .data(&data_left),
+            ];
             let chart_left = Chart::new(datasets_left)
                 .block(Block::default().borders(Borders::ALL).title("Output y[t]"))
                 .x_axis(Axis::default().title("t").bounds([0.0, app.t as f64]))
@@ -205,12 +207,14 @@ fn main() -> Result<()> {
 
             // Right (cumsum or input)
             let data_right: Vec<(f64, f64)> = app.right.clone();
-            let datasets_right = vec![Dataset::default()
-                .name("cumsum(x)")
-                .marker(ratatui::symbols::Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(Color::Green))
-                .data(&data_right)];
+            let datasets_right = vec![
+                Dataset::default()
+                    .name("cumsum(x)")
+                    .marker(ratatui::symbols::Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(Color::Green))
+                    .data(&data_right),
+            ];
             let chart_right = Chart::new(datasets_right)
                 .block(Block::default().borders(Borders::ALL).title("Cumsum input"))
                 .x_axis(Axis::default().title("t").bounds([0.0, app.t as f64]))
@@ -219,71 +223,70 @@ fn main() -> Result<()> {
         })?;
 
         // Input handling with small poll timeout
-        if event::poll(Duration::from_millis(20))? {
-            if let Event::Key(KeyEvent {
+        if event::poll(Duration::from_millis(20))?
+            && let Event::Key(KeyEvent {
                 code, modifiers, ..
             }) = event::read()?
-            {
-                match code {
-                    KeyCode::Char('1') => {
-                        app.mode = InputMode::Sine;
-                        app.recompute()?;
-                    }
-                    KeyCode::Char('2') => {
-                        app.mode = InputMode::Step;
-                        app.recompute()?;
-                    }
-                    KeyCode::Char('3') => {
-                        app.mode = InputMode::SinePlusStep;
-                        app.recompute()?;
-                    }
-                    KeyCode::Char('4') => {
-                        app.mode = InputMode::Square;
-                        app.recompute()?;
-                    }
-                    KeyCode::Char('5') => {
-                        app.mode = InputMode::Noise;
-                        app.recompute()?;
-                    }
-                    KeyCode::Char('+') | KeyCode::Char('=') => {
-                        app.freq = (app.freq
-                            * if modifiers.contains(KeyModifiers::SHIFT) {
-                                1.25
-                            } else {
-                                1.10
-                            })
-                        .min(0.49);
-                        app.recompute()?;
-                    }
-                    KeyCode::Char('-') => {
-                        app.freq = (app.freq
-                            * if modifiers.contains(KeyModifiers::SHIFT) {
-                                0.75
-                            } else {
-                                0.90
-                            })
-                        .max(0.0005);
-                        app.recompute()?;
-                    }
-                    KeyCode::Char('f') | KeyCode::Char('F') => {
-                        app.show_fft = !app.show_fft;
-                        app.recompute()?;
-                    }
-                    KeyCode::Char('c') | KeyCode::Char('C') => {
-                        let m = app.layer.a.dims1().unwrap_or(1);
-                        app.obs_index = (app.obs_index + 1) % m;
-                        set_observe_index(&mut app.layer, app.obs_index)?;
-                        app.recompute()?;
-                    }
-                    KeyCode::Char('r') | KeyCode::Char('R') => {
-                        stable_init_layer(&mut app.layer, app.obs_index)?;
-                        app.recompute()?;
-                    }
-                    KeyCode::Char('q') | KeyCode::Esc => {
-                        running = false;
-                    }
-                    _ => {}
+        {
+            match code {
+                KeyCode::Char('1') => {
+                    app.mode = InputMode::Sine;
+                    app.recompute()?;
                 }
+                KeyCode::Char('2') => {
+                    app.mode = InputMode::Step;
+                    app.recompute()?;
+                }
+                KeyCode::Char('3') => {
+                    app.mode = InputMode::SinePlusStep;
+                    app.recompute()?;
+                }
+                KeyCode::Char('4') => {
+                    app.mode = InputMode::Square;
+                    app.recompute()?;
+                }
+                KeyCode::Char('5') => {
+                    app.mode = InputMode::Noise;
+                    app.recompute()?;
+                }
+                KeyCode::Char('+') | KeyCode::Char('=') => {
+                    app.freq = (app.freq
+                        * if modifiers.contains(KeyModifiers::SHIFT) {
+                            1.25
+                        } else {
+                            1.10
+                        })
+                    .min(0.49);
+                    app.recompute()?;
+                }
+                KeyCode::Char('-') => {
+                    app.freq = (app.freq
+                        * if modifiers.contains(KeyModifiers::SHIFT) {
+                            0.75
+                        } else {
+                            0.90
+                        })
+                    .max(0.0005);
+                    app.recompute()?;
+                }
+                KeyCode::Char('f') | KeyCode::Char('F') => {
+                    app.show_fft = !app.show_fft;
+                    app.recompute()?;
+                }
+                KeyCode::Char('c') | KeyCode::Char('C') => {
+                    let m = app.layer.a.dims1().unwrap_or(1);
+                    app.obs_index = (app.obs_index + 1) % m;
+                    set_observe_index(&mut app.layer, app.obs_index)?;
+                    app.recompute()?;
+                }
+                KeyCode::Char('r') | KeyCode::Char('R') => {
+                    stable_init_layer(&mut app.layer, app.obs_index)?;
+                    app.recompute()?;
+                }
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    running = false;
+                }
+                _ => {}
             }
         }
     }

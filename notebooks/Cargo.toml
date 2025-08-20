@@ -2,21 +2,42 @@
 name = "dlinoss-notebooks"
 version = "0.1.0"
 edition = "2021"
-description = "Notebook glue crate: re-export candle-notebooks utilities and dlinossrustcandle API for single-dep notebooks"
+description = "Notebook utilities crate: Candle helpers, signal generators, FFT tools, and D-LinOSS for evcxr/Jupyter"
 license = "MIT OR Apache-2.0"
+
+[dependencies]
+anyhow = "1.0"
+
+# Single glue dependency: re-export everything through the root crate which brings local Candle.
+dlinossrustcandle = { path = "..", package = "dlinossrustcandle" }
+
+# Core notebook utilities used by helpers/re-exports
+base64 = "0.21"
+html-escape = "0.2"
+
+# UI and Audio frameworks (optional, only for full demos)
+eframe = { version = "0.28", default-features = false, features = ["glow"], optional = true }
+egui_plot = { version = "0.28", optional = true }
+cpal = { version = "0.15.2", optional = true }
+minifb = { version = "0.27", optional = true }
+
+# Pin transitive versions to match local Candle checkout to keep evcxr resolver stable
+# These are not used directly but guide Cargo to a consistent graph.
+zip = { version = "=1.1.1" }
+num_enum = { version = "=0.7.4" }
+rustversion = { version = "=1.0.22" }
 
 [features]
 default = []
-fft = ["dlinossrustcandle/fft", "candle-core/fft"]
-gui = ["dep:eframe", "dep:egui_plot"]
+# Feature passthroughs to the root crate (Candle FFT/scan live there)
+fft = ["dlinossrustcandle/fft"]
+accelerate = ["dlinossrustcandle/accelerate"]
+cuda = ["dlinossrustcandle/cuda"]
+cudnn = ["dlinossrustcandle/cudnn"]
+mkl = ["dlinossrustcandle/mkl"]
+metal = ["dlinossrustcandle/metal"]
+gui = ["eframe", "egui_plot", "dlinossrustcandle/egui"]
+audio = ["cpal"]
+display = ["minifb"]
+full = ["gui", "audio", "display", "fft"]
 
-[dependencies]
-# Use local Candle notebooks utilities (path relative to this file)
-candle-notebooks = { path = "../../../from_github/candle/0aEXPLORATION/research/notebooks/candle_notebooks" }
-# Re-export the D-LinOSS crate from this workspace
-dlinossrustcandle = { path = ".." }
-# For FFT helper (candle-core)
-candle-core = { path = "../../../from_github/candle/candle-core" }
-anyhow = "1.0"
-eframe = { version = "0.28", optional = true }
-egui_plot = { version = "0.28", optional = true }

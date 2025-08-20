@@ -23,7 +23,7 @@ pub fn tensor_to_xy(points: &Tensor) -> Result<Vec<[f64; 2]>> {
 #[cfg(feature = "egui")]
 pub mod egui_dual {
     use super::*;
-    use eframe::{egui, App, Frame, NativeOptions};
+    use eframe::{App, Frame, NativeOptions, egui};
     use egui_plot::{Line, Plot};
 
     pub struct DualData {
@@ -89,11 +89,11 @@ pub mod tui {
     use super::*;
     use crossterm::event::{self, Event, KeyCode, KeyEvent};
     use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+    use ratatui::Terminal;
     use ratatui::backend::CrosstermBackend;
     use ratatui::layout::{Constraint, Direction, Layout};
     use ratatui::style::{Color, Style};
     use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType};
-    use ratatui::Terminal;
     use std::io;
     use std::time::Duration;
 
@@ -116,11 +116,13 @@ pub mod tui {
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                     .split(size);
-                let ds_left = vec![Dataset::default()
-                    .name("left")
-                    .graph_type(GraphType::Line)
-                    .style(Style::default().fg(Color::Cyan))
-                    .data(left)];
+                let ds_left = vec![
+                    Dataset::default()
+                        .name("left")
+                        .graph_type(GraphType::Line)
+                        .style(Style::default().fg(Color::Cyan))
+                        .data(left),
+                ];
                 let chart_left = Chart::new(ds_left)
                     .block(
                         Block::default()
@@ -130,11 +132,13 @@ pub mod tui {
                     .x_axis(Axis::default())
                     .y_axis(Axis::default());
                 f.render_widget(chart_left, chunks[0]);
-                let ds_right = vec![Dataset::default()
-                    .name("right")
-                    .graph_type(GraphType::Line)
-                    .style(Style::default().fg(Color::Green))
-                    .data(right)];
+                let ds_right = vec![
+                    Dataset::default()
+                        .name("right")
+                        .graph_type(GraphType::Line)
+                        .style(Style::default().fg(Color::Green))
+                        .data(right),
+                ];
                 let chart_right = Chart::new(ds_right)
                     .block(
                         Block::default()

@@ -5,7 +5,7 @@ use std::time::Instant;
 #[cfg(feature = "fft")]
 use dlinossrustcandle::TensorFftExt;
 use dlinossrustcandle::{DLinOssLayer, DLinOssLayerConfig, TensorScanExt};
-use eframe::{egui, App, Frame, NativeOptions};
+use eframe::{App, Frame, NativeOptions, egui};
 use egui::{CentralPanel, Context, RichText};
 use egui_plot::{Line, Plot, PlotPoints};
 
@@ -197,11 +197,7 @@ impl AnimatedDLinOSSApp {
                         let t = t_start + (i as f32) * dt;
                         let period = 1.0 / (self.freq * 2.0);
                         let pulse_width = period * 0.15;
-                        if (t % period) < pulse_width {
-                            3.0
-                        } else {
-                            0.0
-                        }
+                        if (t % period) < pulse_width { 3.0 } else { 0.0 }
                     })
                     .collect();
                 Tensor::from_slice(&values, (length, 1), device)?
@@ -322,10 +318,10 @@ impl App for AnimatedDLinOSSApp {
         ctx.request_repaint();
 
         // Update animation if not paused
-        if !self.paused {
-            if let Err(e) = self.update_animation() {
-                eprintln!("Animation error: {e}");
-            }
+        if !self.paused
+            && let Err(e) = self.update_animation()
+        {
+            eprintln!("Animation error: {e}");
         }
 
         // Handle keyboard input
@@ -596,10 +592,3 @@ fn main() -> Result<()> {
 
 // Touch dev-only patched crates so Cargo considers them part of the graph when building examples.
 // This follows the repo guidance: don't suppress warnings; if a patch is declared, deliberately use it.
-#[allow(dead_code)]
-mod _dev_patch_touch {
-    #[allow(unused_imports)]
-    use candle_notebooks as _nb;
-    #[allow(unused_imports)]
-    use candle_transformers as _ct;
-}

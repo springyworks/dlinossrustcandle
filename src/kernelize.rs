@@ -1,6 +1,6 @@
 //! Experimental kernelization (FFT) stubs. Not implemented yet.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use candle::Tensor;
 
 /// Generate an impulse response kernel (stub).

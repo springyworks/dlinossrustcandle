@@ -1,0 +1,16 @@
+[package]
+name = "jupytext-experiment-subcrate"
+version = "0.1.0"
+edition = "2024"
+authors = ["springyworks <none>"]
+description = "Experimenting with Jupytext-paired Rust notebooks that still compile and work with rust-analyzer."
+license = "MIT OR Apache-2.0"
+
+# We keep this crate minimal on purpose. Add deps here only if needed by your examples.
+[dependencies]
+anyhow = "1"
+
+# Expose the notebook-style script as a binary target so `cargo run --bin hello_notebook` works
+[[bin]]
+name = "hello_notebook"
+path = "hello_notebook.rs"

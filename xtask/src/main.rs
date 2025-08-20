@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::fs;
 use std::path::{Path, PathBuf};
-use xshell::{cmd, Shell};
+use xshell::{Shell, cmd};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Ui {
@@ -10,7 +10,6 @@ enum Ui {
     Tui,
     Headless,
 }
-
 #[derive(Debug, Subcommand)]
 enum Cmd {
     /// Build and test the workspace (fmt + clippy + test)
@@ -90,6 +89,18 @@ enum Cmd {
         #[arg(long)]
         write: bool,
     },
+    /// Check-build the notebooks glue crate with selected features
+    NotebooksCheck {
+        /// Comma-separated features to enable (e.g. gui,fft,audio)
+        #[arg(long, value_delimiter = ',')]
+        features: Vec<String>,
+    },
+    /// Run comprehensive workspace testing including all features and combinations
+    Comprehensive {
+        /// Enable extended feature/test combinations (more thorough but slower)
+        #[arg(long)]
+        extended: bool,
+    },
 }
 
 #[derive(Debug, Parser)]
@@ -128,10 +139,11 @@ fn main() -> Result<()> {
             cmd!(sh, "cargo fmt --all").run()?;
         }
         Cmd::Clippy => {
-            cmd!(sh, "cargo clippy --all-targets --all-features").run()?;
+            // Prefer workspace-wide clippy without --all-features to avoid platform-only deps.
+            cmd!(sh, "cargo clippy --workspace --all-targets -- -D warnings").run()?;
         }
         Cmd::RunEx { name, args: extra } => {
-            let mut cmdline = format!("cargo run --example {}", name);
+            let mut cmdline = format!("cargo run --example {name}");
             if args.fft {
                 cmdline.push_str(" --features fft");
             }
@@ -142,7 +154,7 @@ fn main() -> Result<()> {
             cmd!(sh, "{cmdline}").run()?;
         }
         Cmd::RunBin { name, args: extra } => {
-            let mut cmdline = format!("cargo run --bin {}", name);
+            let mut cmdline = format!("cargo run --bin {name}");
             if args.fft {
                 cmdline.push_str(" --features fft");
             }
@@ -211,6 +223,12 @@ fn main() -> Result<()> {
         Cmd::DocsIndex { write } => {
             docs_index(&sh, write)?;
         }
+        Cmd::NotebooksCheck { features } => {
+            notebooks_check(&sh, features)?;
+        }
+        Cmd::Comprehensive { extended } => {
+            comprehensive_test(&sh, extended)?;
+        }
     }
     Ok(())
 }
@@ -228,6 +246,8 @@ fn verify_candle_migrated(sh: &Shell, fft: bool) -> Result<()> {
     Ok(())
 }
 
+// Legacy probe kept for reference; current command uses verify_candle_migrated.
+#[allow(dead_code)]
 fn verify_candle(sh: &Shell, fft: bool) -> Result<()> {
     // Workspace root = CWD when running xtask
     let root = std::env::current_dir()?;
@@ -262,6 +282,7 @@ fn verify_candle(sh: &Shell, fft: bool) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn ensure_dir(path: &Path) -> Result<()> {
     if !path.exists() {
         fs::create_dir_all(path)?;
@@ -272,12 +293,13 @@ fn ensure_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn write_probe_files(probe_dir: &Path, candle_core_abs: &Path) -> Result<()> {
     let cargo_toml = format!(
         r#"[package]
 name = "candle_probe"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [workspace]
 
@@ -371,7 +393,7 @@ fn discover_tests(sh: &Shell, run: bool, features: Vec<String>) -> Result<()> {
 struct TestFunction {
     name: String,
     file_path: PathBuf,
-    line_number: usize,
+    _line_number: usize,
     feature_gated: bool,
     feature_name: Option<String>,
 }
@@ -459,7 +481,7 @@ fn analyze_rust_file(
                     functions.push(TestFunction {
                         name: fn_name,
                         file_path: file_path.to_path_buf(),
-                        line_number: line_num + 1,
+                        _line_number: line_num + 1,
                         feature_gated: current_feature_gate.is_some(),
                         feature_name: current_feature_gate.clone(),
                     });
@@ -597,7 +619,7 @@ fn run_discovered_tests(sh: &Shell, features: &[String]) -> Result<()> {
     // Run individual sub-crate tests to ensure nothing is missed
     let crates = ["dlinoss-augment", "dlinoss-display", "dlinoss-helpers"];
     for crate_name in crates {
-        println!("Testing {} individually...", crate_name);
+        println!("Testing {crate_name} individually...");
         if features.is_empty() {
             cmd!(sh, "cargo test -p {crate_name}").run()?;
         } else {
@@ -609,6 +631,7 @@ fn run_discovered_tests(sh: &Shell, features: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_windows(
     sh: &Shell,
     release: bool,
@@ -630,7 +653,9 @@ fn build_windows(
 
     // Warn if MinGW cross-compiler is missing
     if cmd!(sh, "which x86_64-w64-mingw32-gcc").read().is_err() {
-        println!("⚠️  Missing MinGW cross compiler (x86_64-w64-mingw32-gcc). On Ubuntu: sudo apt-get install -y mingw-w64");
+        println!(
+            "⚠️  Missing MinGW cross compiler (x86_64-w64-mingw32-gcc). On Ubuntu: sudo apt-get install -y mingw-w64"
+        );
     }
 
     // Resolve target: prefer explicit bin/example, default to example viz_animated_egui
@@ -677,22 +702,14 @@ fn build_windows(
     // Determine built exe path
     let exe_path = if is_bin {
         if release {
-            format!("target/x86_64-pc-windows-gnu/release/{}.exe", target_name)
+            format!("target/x86_64-pc-windows-gnu/release/{target_name}.exe")
         } else {
-            format!("target/x86_64-pc-windows-gnu/debug/{}.exe", target_name)
+            format!("target/x86_64-pc-windows-gnu/debug/{target_name}.exe")
         }
+    } else if release {
+        format!("target/x86_64-pc-windows-gnu/release/examples/{target_name}.exe")
     } else {
-        if release {
-            format!(
-                "target/x86_64-pc-windows-gnu/release/examples/{}.exe",
-                target_name
-            )
-        } else {
-            format!(
-                "target/x86_64-pc-windows-gnu/debug/examples/{}.exe",
-                target_name
-            )
-        }
+        format!("target/x86_64-pc-windows-gnu/debug/examples/{target_name}.exe")
     };
 
     if std::path::Path::new(&exe_path).exists() {
@@ -713,7 +730,7 @@ fn build_windows(
         if copy_to_windows {
             // Prefer .../FROMUBUNTU24/native if present, else .../FROMUBUNTU24
             let default_root = "/media/rustuser/onSSD/FROMUBUNTU24".to_string();
-            let default_native = format!("{}/native", default_root);
+            let default_native = format!("{default_root}/native");
             let auto_default = if std::path::Path::new(&default_native).exists() {
                 default_native
             } else {
@@ -721,16 +738,13 @@ fn build_windows(
             };
             let dest_dir = out_dir.unwrap_or(auto_default);
             if !std::path::Path::new(&dest_dir).exists() {
-                println!(
-                    "ℹ️  Destination directory does not exist, creating: {}",
-                    dest_dir
-                );
+                println!("ℹ️  Destination directory does not exist, creating: {dest_dir}");
                 std::fs::create_dir_all(&dest_dir)?;
             }
             let base = out_name.unwrap_or(target_name);
             let dest_file = format!("{}/{}.exe", dest_dir.trim_end_matches('/'), base);
             cmd!(sh, "cp {exe_path} {dest_file}").run()?;
-            println!("📂 Copied to Windows shared location: {}", dest_file);
+            println!("📂 Copied to Windows shared location: {dest_file}");
             println!("🪟 Ready to access from Windows 11!");
         } else {
             println!("ℹ️  Skipped copy. Use --copy-to-windows to copy automatically.");
@@ -757,7 +771,9 @@ fn docs_index(_sh: &Shell, write: bool) -> Result<()> {
             let path = entry.path();
             if path.is_dir() {
                 let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                if name == "target" || name == ".git" { continue; }
+                if name == "target" || name == ".git" {
+                    continue;
+                }
                 visit(&path, out)?;
             } else if path.file_name().and_then(|s| s.to_str()) == Some("README.md") {
                 out.push(path);
@@ -769,7 +785,10 @@ fn docs_index(_sh: &Shell, write: bool) -> Result<()> {
 
     // Extract titles and build relative paths map
     #[derive(Clone)]
-    struct DocEntry { path: PathBuf, title: String }
+    struct DocEntry {
+        path: PathBuf,
+        title: String,
+    }
     let mut entries: Vec<DocEntry> = Vec::new();
     for p in &readmes {
         let content = fs::read_to_string(p)?;
@@ -779,10 +798,20 @@ fn docs_index(_sh: &Shell, write: bool) -> Result<()> {
                 let lt = l.trim();
                 if lt.starts_with('#') {
                     Some(lt.trim_start_matches('#').trim().to_string())
-                } else { None }
+                } else {
+                    None
+                }
             })
-            .unwrap_or_else(|| p.strip_prefix(&root).unwrap_or(p).to_string_lossy().to_string());
-        entries.push(DocEntry { path: p.clone(), title });
+            .unwrap_or_else(|| {
+                p.strip_prefix(&root)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .to_string()
+            });
+        entries.push(DocEntry {
+            path: p.clone(),
+            title,
+        });
     }
 
     let start_marker = "<!-- docs-index:start -->";
@@ -793,45 +822,290 @@ fn docs_index(_sh: &Shell, write: bool) -> Result<()> {
         let mut new_block = String::new();
         new_block.push_str(start_marker);
         new_block.push('\n');
-        new_block.push_str("<!-- Auto-generated by xtask docs-index. Do not edit between markers. -->\n");
+        new_block.push_str(
+            "<!-- Auto-generated by xtask docs-index. Do not edit between markers. -->\n",
+        );
         new_block.push_str("### Related READMEs\n\n");
 
         // Build list of links relative to this file, excluding itself
         for other in &entries {
-            if other.path == entry.path { continue; }
+            if other.path == entry.path {
+                continue;
+            }
             let rel = pathdiff::diff_paths(&other.path, entry.path.parent().unwrap_or(&root))
                 .unwrap_or_else(|| other.path.clone());
             new_block.push_str(&format!("- [{}]({})\n", other.title, rel.display()));
         }
         new_block.push_str(end_marker);
 
-        let updated = if let (Some(s), Some(e)) = (content.find(start_marker), content.find(end_marker)) {
-            let e_end = e + end_marker.len();
-            let mut s1 = String::new();
-            s1.push_str(&content[..s]);
-            s1.push_str(&new_block);
-            s1.push_str(&content[e_end..]);
-            s1
-        } else {
-            // Append a new section at the end
-            let mut s1 = content.clone();
-            if !s1.ends_with('\n') { s1.push('\n'); }
-            s1.push_str("\n");
-            s1.push_str(&new_block);
-            s1.push('\n');
-            s1
-        };
+        let updated =
+            if let (Some(s), Some(e)) = (content.find(start_marker), content.find(end_marker)) {
+                let e_end = e + end_marker.len();
+                let mut s1 = String::new();
+                s1.push_str(&content[..s]);
+                s1.push_str(&new_block);
+                s1.push_str(&content[e_end..]);
+                s1
+            } else {
+                // Append a new section at the end
+                let mut s1 = content.clone();
+                if !s1.ends_with('\n') {
+                    s1.push('\n');
+                }
+                s1.push('\n');
+                s1.push_str(&new_block);
+                s1.push('\n');
+                s1
+            };
 
         if updated != content {
             if write {
                 let mut f = fs::File::create(&entry.path)?;
                 f.write_all(updated.as_bytes())?;
-                println!("Updated {}", entry.path.strip_prefix(&root).unwrap_or(&entry.path).display());
+                println!(
+                    "Updated {}",
+                    entry
+                        .path
+                        .strip_prefix(&root)
+                        .unwrap_or(&entry.path)
+                        .display()
+                );
             } else {
-                println!("Would update {} (run with --write to apply)", entry.path.strip_prefix(&root).unwrap_or(&entry.path).display());
+                println!(
+                    "Would update {} (run with --write to apply)",
+                    entry
+                        .path
+                        .strip_prefix(&root)
+                        .unwrap_or(&entry.path)
+                        .display()
+                );
             }
         }
     }
 
     Ok(())
+}
+
+fn notebooks_check(sh: &Shell, features: Vec<String>) -> Result<()> {
+    let manifest = "notebooks/Cargo.toml";
+    let mut args = vec![
+        "check".to_string(),
+        "--manifest-path".to_string(),
+        manifest.to_string(),
+    ];
+    let feats = if features.is_empty() {
+        vec!["gui".to_string(), "fft".to_string(), "audio".to_string()]
+    } else {
+        features
+    };
+    if !feats.is_empty() {
+        args.push("--features".to_string());
+        args.push(feats.join(","));
+    }
+    let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    cmd!(sh, "cargo {args_ref...}").run()?;
+    Ok(())
+}
+
+/// Run comprehensive testing across the workspace including:
+/// - Basic compilation check
+/// - Feature combination testing  
+/// - Test builds with all feature combinations
+/// - Workspace clippy (informational)
+/// - Documentation build
+/// - Format check
+/// - Notebooks validation
+/// - Discovery and execution of all tests
+fn comprehensive_test(sh: &Shell, extended: bool) -> Result<()> {
+    println!("🚀 Starting comprehensive D-LinOSS workspace testing");
+    println!("===================================================");
+
+    let mut test_count = 0;
+    let mut passed_count = 0;
+
+    // Helper function for running tests with status tracking
+    let mut run_test = |name: &str, test_fn: &dyn Fn() -> Result<()>| {
+        test_count += 1;
+        print!("📋 Testing: {name} ... ");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+        match test_fn() {
+            Ok(_) => {
+                println!("✅ PASS");
+                passed_count += 1;
+            }
+            Err(e) => {
+                println!("❌ FAIL: {e}");
+            }
+        }
+    };
+
+    // 1. Basic workspace check
+    run_test("Workspace compilation", &|| -> Result<()> {
+        cmd!(sh, "cargo check --workspace").run()?;
+        Ok(())
+    });
+
+    // 2. Feature combination testing
+    let feature_sets = if extended {
+        vec![
+            vec![],                       // baseline CPU
+            vec!["fft"],                  // FFT only
+            vec!["egui"],                 // GUI only
+            vec!["etui"],                 // TUI only
+            vec!["audio"],                // Audio only
+            vec!["fft", "egui"],          // FFT + GUI
+            vec!["fft", "etui"],          // FFT + TUI
+            vec!["fft", "audio"],         // FFT + Audio
+            vec!["egui", "audio"],        // GUI + Audio
+            vec!["fft", "egui", "audio"], // All features
+        ]
+    } else {
+        vec![
+            vec![],              // baseline CPU
+            vec!["fft"],         // FFT only
+            vec!["fft", "egui"], // FFT + GUI (most common combo)
+        ]
+    };
+
+    for features in feature_sets {
+        let feature_name = if features.is_empty() {
+            "CPU-only".to_string()
+        } else {
+            features.join("+")
+        };
+
+        run_test(
+            &format!("Feature combo: {feature_name}"),
+            &|| -> Result<()> {
+                if features.is_empty() {
+                    cmd!(sh, "cargo check --workspace").run()?;
+                } else {
+                    let features_str = features.join(",");
+                    cmd!(sh, "cargo check --workspace --features {features_str}").run()?;
+                }
+                Ok(())
+            },
+        );
+    }
+
+    // 3. Test builds with feature combinations
+    run_test("Test builds (CPU-only)", &|| -> Result<()> {
+        cmd!(sh, "cargo test --workspace --no-run").run()?;
+        Ok(())
+    });
+
+    if extended {
+        run_test("Test builds (FFT)", &|| -> Result<()> {
+            cmd!(sh, "cargo test --workspace --features fft --no-run").run()?;
+            Ok(())
+        });
+
+        run_test("Test builds (FFT+GUI)", &|| -> Result<()> {
+            cmd!(sh, "cargo test --workspace --features fft,egui --no-run").run()?;
+            Ok(())
+        });
+    }
+
+    // 4. Actual test execution
+    run_test("Test execution (CPU-only)", &|| -> Result<()> {
+        cmd!(sh, "cargo test --workspace").run()?;
+        Ok(())
+    });
+
+    if extended {
+        run_test("Test execution (FFT)", &|| -> Result<()> {
+            cmd!(sh, "cargo test --workspace --features fft").run()?;
+            Ok(())
+        });
+    }
+
+    // 5. Workspace clippy (informational)
+    run_test("Workspace clippy (informational)", &|| -> Result<()> {
+        let _status = cmd!(sh, "cargo clippy --workspace --all-targets").run();
+        // Don't fail on clippy warnings in comprehensive mode
+        println!("  (clippy warnings are informational only)");
+        Ok(())
+    });
+
+    // 6. Documentation build
+    run_test("Documentation build", &|| -> Result<()> {
+        cmd!(sh, "cargo doc --workspace --no-deps").run()?;
+        Ok(())
+    });
+
+    // 7. Format check
+    run_test("Format check", &|| -> Result<()> {
+        cmd!(sh, "cargo fmt --all -- --check").run()?;
+        Ok(())
+    });
+
+    // 8. Candle verification
+    run_test("Candle FFT verification", &|| -> Result<()> {
+        cmd!(sh, "cargo test -p dlinoss-helpers --features fft").run()?;
+        Ok(())
+    });
+
+    // 9. Notebooks validation
+    run_test("Notebooks compilation", &|| -> Result<()> {
+        notebooks_check(
+            sh,
+            vec!["gui".to_string(), "fft".to_string(), "audio".to_string()],
+        )?;
+        Ok(())
+    });
+
+    // 10. Test discovery and validation
+    run_test("Test discovery", &|| -> Result<()> {
+        discover_tests(sh, false, vec![])?; // Just discovery, no execution
+        Ok(())
+    });
+
+    // 11. Examples compilation check
+    run_test("Examples compilation", &|| -> Result<()> {
+        cmd!(sh, "cargo check --examples").run()?;
+        Ok(())
+    });
+
+    if extended {
+        run_test("Examples compilation (FFT)", &|| -> Result<()> {
+            cmd!(sh, "cargo check --examples --features fft").run()?;
+            Ok(())
+        });
+
+        run_test("Examples compilation (FFT+GUI)", &|| -> Result<()> {
+            cmd!(sh, "cargo check --examples --features fft,egui").run()?;
+            Ok(())
+        });
+    }
+
+    // Summary
+    println!();
+    println!("📊 COMPREHENSIVE TEST SUMMARY");
+    println!("=============================");
+    println!("Total tests: {test_count}");
+    println!("Passed: {passed_count} ✅");
+    println!("Failed: {} ❌", test_count - passed_count);
+
+    let success_rate = if test_count > 0 {
+        (passed_count * 100) / test_count
+    } else {
+        0
+    };
+    println!("Success rate: {success_rate}%");
+
+    if passed_count == test_count {
+        println!();
+        println!("🎉 All tests passed! D-LinOSS workspace is healthy.");
+        println!();
+        println!("Environment variables for even more thorough testing:");
+        println!("  Run with --extended for additional feature combinations");
+        Ok(())
+    } else {
+        println!();
+        println!("⚠️  Some tests failed. See output above for details.");
+        anyhow::bail!(
+            "Comprehensive test suite failed with {}/{test_count} tests passing",
+            passed_count
+        )
+    }
 }

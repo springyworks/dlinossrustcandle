@@ -1,0 +1,4 @@
+# Jupytext configuration for this sub-crate
+# Pair .ipynb with a Rust script using the percent format (language-agnostic cell markers)
+# This allows editing and versioning the .rs file while round-tripping to/from the notebook UI.
+formats = "ipynb,rs:percent"

@@ -55,7 +55,7 @@ This integration allows the probe to be maintained as part of the main workspace
 ### Related READMEs
 
 - [Source Directory (`src/`)](../../../../src/README.md)
-- [dlinossrustcandle# dlinossrustcandle](../../../../README.md)
+- [dlinossrustcandle](../../../../README.md)
 - [D-LinOSS Notebooks](../../../../notebooks/README.md)
 - [Workspace Sub-Crates (`crates/`)](../../../README.md)
 <!-- docs-index:end -->

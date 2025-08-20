@@ -2,19 +2,23 @@
 members = [
 	".",
 	"crates/dlinoss-augment",
-	"crates/dlinoss-display",
+	"crates/dlinoss-display", 
 	"crates/dlinoss-helpers",
-	"notebooks",
+	"notebooks",  # dlinoss-notebooks glue crate
+	"notebooks/jupytext-experiment-subcrate",
 	"xtask",
 ]
 exclude = [
 	"TEMPTEST/candle_probe",
 ]
 
+[workspace.dependencies]
+dlinoss-notebooks = { path = "notebooks" }
+
 [package]
 name = "dlinossrustcandle"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "DLiNOSS (Damped Linear Oscillatory State-Space) layer implemented on Hugging Face Candle tensors"
 license = "MIT OR Apache-2.0"
 
@@ -55,14 +59,12 @@ egui = "0.28"
 egui_plot = "0.28"
 ratatui = { version = "0.26" }
 crossterm = { version = "0.27" }
-## Lightly reference the Candle notebooks crate in dev to keep its local patch "used"
-candle-notebooks = { path = "../../from_github/candle/0aEXPLORATION/research/notebooks/candle_notebooks", default-features = false }
 ## Same for candle-transformers to satisfy upstream patch logs when present
-candle-transformers = { path = "../../from_github/candle/candle-transformers" }
+candle-transformers = { version = "0.9.1" }
 
 [patch.crates-io]
-candle-core = { path = "../../from_github/candle/candle-core" }
-candle-nn = { path = "../../from_github/candle/candle-nn" }
+candle-core = { path = "/home/rustuser/projects/rust/from_github/candle/candle-core" }
+candle-nn = { path = "/home/rustuser/projects/rust/from_github/candle/candle-nn" }
 ## Keep these in sync with your local Candle checkout so cargo doesn't warn about unused patches
-candle-transformers = { path = "../../from_github/candle/candle-transformers" }
-candle-notebooks = { path = "../../from_github/candle/0aEXPLORATION/research/notebooks/candle_notebooks" }
+candle-transformers = { path = "/home/rustuser/projects/rust/from_github/candle/candle-transformers" }
+candle_tensor_augment = { path = "/home/rustuser/projects/rust/from_github/candle/0aEXPLORATION/candle_tensor_augment" }

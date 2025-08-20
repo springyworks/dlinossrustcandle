@@ -6,11 +6,14 @@ Workspace: /home/rustuser/projects/rust/active/dlinossrustcandle
 ## Quick guide for contributors and Copilot
 
 - Don’t reimplement scan/FFT. Use Candle’s built-in `cumsum`/`exclusive_scan` and FFT APIs. The `crates/dlinoss-augment` sub-crate provides traits that call these operations directly.
-- Use VS Code search wisely; avoid heavy disk churn. Prefer targeted listings and searches.
+- Use VS Code search wisely; avoid heavy disk churn. Prefer targeted listings and searches. use gg for fast grep alternative and vscode-commands&vscode-taks
 - Add useful Rust doc comments at the top of files for quick overviews.
 - When targeting a Windows 11 executable from the Ubuntu 24 environment, place the generated `.exe` in `/media/rustuser/onSSD/FROMUBUNTU24` so it’s accessible from your Windows 11 native boot.
 - Don’t suppress warnings. Treat warnings as signals to improve quality.
-- Notebooks (evcxr) single-dep rule: each notebook must declare exactly one `:dep`, pointing to the glue crate `dlinoss-notebooks = { path = "." }`. Do not add other `:dep`s; the glue crate re-exports Candle notebook utilities, the D‑LinOSS API, and optional FFT helpers.
+- Add ample code comments. At the top of each `*.rs` and `*.rs.ipynb` code cell, include two Rust doc comment lines to support future doc scanning.
+- Use xtasks where opurtune, and use vscode-tasks, revert to old school rust testing if needed
+- Notebooks (evcxr) single-dep rule: each notebook must declare exactly one `:dep`, pointing to the glue 
+crate `dlinoss-notebooks = { path = "." }`. Do not add other `:dep`s; the glue crate re-exports Candle notebook utilities, the D‑LinOSS API, and optional  helpers.
 
 ## Goals
 
@@ -19,7 +22,6 @@ Workspace: /home/rustuser/projects/rust/active/dlinossrustcandle
 - For training and inference, follow Candle’s idioms. Where the Python implementation has features Candle can replicate, prefer the Candle way (experimentation encouraged).
 - If you need Python, use the virtual environment at `~/.uservenv`.
 - Notebooks are encouraged for exploration and documentation.
-- Add ample code comments. At the top of each `*.rs` and `*.rs.ipynb` code cell, include two Rust doc comment lines to support future doc scanning.
 
 ## References
 
@@ -30,7 +32,7 @@ Workspace: /home/rustuser/projects/rust/active/dlinossrustcandle
 
 ## Local Candle dependencies
 
-- `candle-core` and `candle-nn` are path dependencies to your local Candle checkout.
+- `candle-core` and `candle-nn` are possible path dependencies to your local Candle (=Candlekos) checkout.
 - Optional features: `accelerate`, `cuda`, `cudnn`, `mkl`, `metal`.
 - Scan/FFT paths are experimental: default to sequential scan; gate FFT and any parallel scan under features.
 
@@ -44,14 +46,10 @@ Workspace: /home/rustuser/projects/rust/active/dlinossrustcandle
 			- CPU only: `:dep dlinoss-notebooks = { path = "." }`
 			- With FFT: `:dep dlinoss-notebooks = { path = ".", features = ["fft"] }`
 		- From elsewhere: use an absolute path to the `notebooks/` crate directory:
-			- `:dep dlinoss-notebooks = { path = "/home/rustuser/projects/rust/active/dlinossrustcandle/notebooks", features = ["fft"] }`
+			- `:dep dlinoss-notebooks = { path = "/home/rustuser/projects/rust/active/dlinossrustcandle/notebooks", features = ["fft"] }`, todo check-it
 	- Rationale: The glue crate re-exports all needed items (Candle notebook utilities from upstream `candle_notebooks`, the D‑LinOSS API, `SignalGen`, and `rfft_magnitude` under the `fft` feature). This keeps notebooks portable and avoids dependency drift.
 	- Tip: End complex cells with `println!("done");` or return a concrete value to avoid REPL “never type” pitfalls.
 
-### Reference: Candle’s notebooks crate
-- Upstream best practices live in Candle’s `candle_notebooks` crate:
-	`/home/rustuser/projects/rust/from_github/candle/0aEXPLORATION/research/notebooks/candle_notebooks`
-- Our `dlinoss-notebooks` builds on top of that to provide a single, stable dependency for all D‑LinOSS research notebooks.
 
 ## High-level requirements
 
@@ -71,7 +69,7 @@ Workspace: /home/rustuser/projects/rust/active/dlinossrustcandle
 
 - See `src/` for implementation and `examples/` and `tests/` for usage.
 
-## Mathematical specification (concise)
+## Mathematical specification (concise) .   todo: check it
 
 - Continuous-time linear SSM: \(\dot{x} = A x + B u,\ y = C x + D u\)
 - Damped oscillatory 2×2 blocks for poles \(p=-\alpha\pm i\omega\), \(\alpha>0\), \(\omega>0\)

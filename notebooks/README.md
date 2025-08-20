@@ -7,52 +7,85 @@
 ### Related READMEs
 
 - [Source Directory (`src/`)](../src/README.md)
-- [dlinossrustcandle# dlinossrustcandle](../README.md)
+- [dlinossrustcandle](../README.md)
 - [Candle Probe (Migrated)](../crates/dlinoss-helpers/src/probe/README.md)
 - [Workspace Sub-Crates (`crates/`)](../crates/README.md)
 <!-- docs-index:end -->
 
-This folder contains a small glue crate (`dlinoss-notebooks`) designed for a smooth evcxr/Jupyter experience with a single dependency per notebook. The crate re-exports:
+This folder contains a notebook utilities crate (`dlinoss-notebooks`) designed for smooth evcxr/Jupyter experiences. The crate provides:
 
 - Candle's notebook helpers (`candle_notebooks`)
-- The D‑LinOSS API (`DLinOssLayer`, `DLinOssLayerConfig`, and helpers)
-- Convenience utilities for research (e.g., `SignalGen`), and optional FFT helpers when the `fft` feature is enabled
+- Signal generation utilities (`SignalGen`)
+- FFT analysis tools (when `fft` feature is enabled)
+- Generic tensor visualization framework (when `gui` feature is enabled)
+- Core Candle types (`Tensor`, `Device`, `DType`, `Result`)
 
-The policy is strict on purpose: each notebook must declare exactly one `:dep` line. This keeps notebooks portable, avoids dependency drift, and matches upstream Candle notebook practices.
+For complete D-LinOSS functionality, notebooks use a single dependency approach via this glue crate. It re-exports Candle tensors and D‑LinOSS types from the workspace root, so you keep one `:dep` line per notebook.
+
+## Single :dep Dependency Approach
+
+To avoid cargo resolver issues in evcxr and keep things simple, notebooks should use a single dependency pointing at this `dlinoss-notebooks` crate. All Candle and D‑LinOSS APIs are re‑exported here.
+
+### Dependency Required
+```rust
+:dep dlinoss-notebooks = { path = ".", features = ["fft", "gui", "audio"] }
+```
+
+### What This Provides
+
+**`dlinoss-notebooks`:**
+- Candle utilities and notebook helpers
+- Signal generators (`SignalGen::sine`, `SignalGen::chirp`, etc.)
+- FFT analysis tools (`rfft_magnitude`)
+- Generic tensor visualization framework
+- Core types: `Tensor`, `Device`, `DType`, `Result`
+-- and re‑exports of D‑LinOSS specific types: `DLinOssLayer`, `DLinOssLayerConfig`
+-- the damped linear oscillatory layer implementation from the workspace root
+
+### Why This Approach?
+
+- **Single :dep**: Eases evcxr’s resolver and avoids conflicts with transitive versions
+- **Feature Complete**: All functionality (FFT, GUI, audio) works via feature flags
+- **Clear Re‑exports**: Use Candle and D‑LinOSS with a single import (`use dlinoss_notebooks::*;`)
+- **Flexible**: You can enable only the features you need per notebook
 
 ## Quick start (from this `notebooks/` directory)
 
-- CPU only (no FFT):
+Basic setup with all features:
 
-```
-:dep dlinoss-notebooks = { path = "." }
+```rust
+:dep dlinoss-notebooks = { path = ".", features = ["fft", "gui", "audio"] }
+
+// Import utilities, Candle, and D‑LinOSS core types
+use dlinoss_notebooks::*;
 ```
 
-- With FFT helpers enabled:
+Minimal setup (FFT only):
 
-```
+```rust
 :dep dlinoss-notebooks = { path = ".", features = ["fft"] }
-```
 
-After that single `:dep`, import what you need:
-
-```
-// Evcxr code cell (Rust)
-use dlinoss_notebooks::*; // brings in Result, Candle notebook utils, DLinOSS API, SignalGen
+use dlinoss_notebooks::*;
 ```
 
 ## Minimal end‑to‑end example
 
-```
-// 1) Single dependency
+```rust
+// 1) Single dependency for complete functionality
 :dep dlinoss-notebooks = { path = ".", features = ["fft"] }
 
-// 2) Bring symbols into scope
+// 2) Import utilities and D‑LinOSS types
 use dlinoss_notebooks::*;
 
 // 3) Build a tiny DLinOSS layer on CPU
-let device = candle_core::Device::Cpu;
-let cfg = DLinOssLayerConfig { state_dim: 16, input_dim: 1, output_dim: 1, delta_t: 1e-2, dtype: candle_core::DType::F32 };
+let device = Device::Cpu;
+let cfg = DLinOssLayerConfig { 
+    state_dim: 16, 
+    input_dim: 1, 
+    output_dim: 1, 
+    delta_t: 1e-2, 
+    dtype: DType::F32 
+};
 let layer = DLinOssLayer::new(cfg, &device)?;
 
 // 4) Create an input signal and run a forward pass
@@ -60,32 +93,39 @@ let x = SignalGen::sine(256, 1.5, 1e-2)?;           // shape [1, 256, 1]
 let y = layer.forward(&x, None)?;                   // shape [1, 256, 1]
 println!("y shape: {:?}", y.dims());
 
-// 5) Optional: quick FFT magnitude for visualization (requires features=["fft"]))
+// 5) Optional: quick FFT magnitude for visualization
 let x_host: Vec<f32> = x.squeeze(0)?.squeeze(1)?.to_vec1::<f32>()?;
 let mag = rfft_magnitude(&x_host)?;                 // Vec<f32> magnitudes
 println!("first 8 magnitudes: {:?}", &mag[..8.min(mag.len())]);
 ```
 
 Notes:
-- End cells with a concrete value or a println! to keep evcxr happy.
-- Avoid using `?` at the top level; prefer helper closures or return a `Result` value.
-- Keep shapes explicit; Candle expects `[B, T, In]` and returns `[B, T, Out]`.
+- Both dependencies are needed for complete D-LinOSS functionality
+- End cells with a concrete value or println! to keep evcxr happy
+- Avoid using `?` at the top level; prefer helper closures or return a `Result` value
+- Keep shapes explicit; Candle expects `[B, T, In]` and returns `[B, T, Out]`
+
+## Audio troubleshooting (for the realtime demo)
+
+- If you get "no output device available", ensure a working audio output is configured on the OS and not exclusively locked by another app.
+- On Wayland/X11, run from a session with audio (PulseAudio/PipeWire) active.
+- If sound is choppy, your system may be under heavy load; close other CPU-heavy apps or try reducing the chunk size in the demo code.
 
 ## Running a notebook from elsewhere
 
-If you're not running the notebook from this `notebooks/` folder, use an absolute path to the crate:
+If you're not running the notebook from this `notebooks/` folder, use absolute paths:
 
-```
+```rust
 :dep dlinoss-notebooks = { path = "/home/rustuser/projects/rust/active/dlinossrustcandle/notebooks", features = ["fft"] }
 ```
 
-The rest of the code remains the same (`use dlinoss_notebooks::*;`).
+The rest of the code remains the same.
 
-## Why a single :dep?
+## Why Single Dependency?
 
-- Guarantees one source of truth for all notebook dependencies.
-- Ensures consistent versions and features across notebooks.
-- Mirrors Candle's `candle_notebooks` best practices.
+- **Simplicity**: One line to re‑export all you need
+- **Stability**: Avoids evcxr cargo resolver conflicts
+- **Clarity**: Keeps notebooks focused on content, not dependency wiring
 
 ## Troubleshooting
 

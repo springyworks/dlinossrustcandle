@@ -3,8 +3,8 @@ use candle::{DType, Device, Tensor};
 #[cfg(feature = "fft")]
 use dlinossrustcandle::TensorFftExt;
 use dlinossrustcandle::{DLinOssLayer, DLinOssLayerConfig, TensorScanExt};
-use eframe::{egui, App, Frame, NativeOptions};
-use egui::{CentralPanel, Context};
+use eframe::{App, Frame, NativeOptions, egui};
+use egui::{CentralPanel, Color32, Context};
 use egui_plot::{Line, Plot};
 
 // Small helper to convert a [T, D] tensor to (x,y) pairs for D=1.
@@ -132,10 +132,8 @@ impl App for DualPaneApp {
             }
         });
 
-        if need_recompute {
-            if let Err(e) = self.recompute() {
-                eprintln!("recompute error: {e}");
-            }
+        if need_recompute && let Err(e) = self.recompute() {
+            eprintln!("recompute error: {e}");
         }
 
         CentralPanel::default().show(ctx, |ui| {
@@ -148,16 +146,16 @@ impl App for DualPaneApp {
                     .show(&mut cols[0], |p| {
                         p.line(line_left);
                     });
-                if self.show_bottom {
-                    if let Some(bl) = &self.bottom_left {
-                        cols[0].heading("Bottom Left");
-                        let line_bl = Line::new(bl.clone());
-                        Plot::new("bottom-left-plot")
-                            .view_aspect(2.0)
-                            .show(&mut cols[0], |p| {
-                                p.line(line_bl);
-                            });
-                    }
+                if self.show_bottom
+                    && let Some(bl) = &self.bottom_left
+                {
+                    cols[0].heading("Bottom Left");
+                    let line_bl = Line::new(bl.clone());
+                    Plot::new("bottom_left")
+                        .height(200.0)
+                        .show(&mut cols[0], |plot_ui| {
+                            plot_ui.line(line_bl.name("BL").color(Color32::LIGHT_GREEN));
+                        });
                 }
 
                 // Right column
@@ -168,16 +166,16 @@ impl App for DualPaneApp {
                     .show(&mut cols[1], |p| {
                         p.line(line_right);
                     });
-                if self.show_bottom {
-                    if let Some(br) = &self.bottom_right {
-                        cols[1].heading("Bottom Right");
-                        let line_br = Line::new(br.clone());
-                        Plot::new("bottom-right-plot")
-                            .view_aspect(2.0)
-                            .show(&mut cols[1], |p| {
-                                p.line(line_br);
-                            });
-                    }
+                if self.show_bottom
+                    && let Some(br) = &self.bottom_right
+                {
+                    cols[1].heading("Bottom Right");
+                    let line_br = Line::new(br.clone());
+                    Plot::new("bottom_right")
+                        .height(200.0)
+                        .show(&mut cols[1], |plot_ui| {
+                            plot_ui.line(line_br.name("BR").color(Color32::LIGHT_BLUE));
+                        });
                 }
             });
         });
@@ -253,7 +251,7 @@ impl DualPaneApp {
             if self.show_fft {
                 let y1d = y.squeeze(0)?; // [T,1]
                 let y1d = y1d.reshape((t,))?; // [T]
-                                              // Use augment trait (wraps Candle fft)
+                // Use augment trait (wraps Candle fft)
                 let spec = y1d.fft_real_norm()?; // real->complex, normalized
                 let spec_len = spec.dims1()?;
                 let pairs = spec_len / 2;

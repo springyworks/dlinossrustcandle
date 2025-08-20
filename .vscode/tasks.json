@@ -45,6 +45,57 @@
 			"type": "shell",
 			"command": "cargo run -p xtask -- verify-candle --fft && cargo run -p xtask -- ci",
 			"group": "build"
+		},
+		{
+			"label": "docs-index --write",
+			"type": "shell",
+			"command": "cargo run -p xtask -- docs-index --write",
+			"group": "build"
+		},
+		{
+			"label": "build-and-test",
+			"type": "shell",
+			"command": "cargo run -p xtask -- verify-candle --fft && cargo run -p xtask -- ci"
+		},
+		{
+			"label": "build-and-test",
+			"type": "shell",
+			"command": "cargo run -p xtask -- verify-candle --fft && cargo run -p xtask -- ci"
+		},
+		{
+			"label": "xtask: comprehensive (fast)",
+			"type": "shell",
+			"command": "cargo run -p xtask -- comprehensive"
+		},
+		{
+			"label": "xtask: comprehensive (fast)",
+			"type": "shell",
+			"command": "cargo run -p xtask -- comprehensive"
+		},
+		{
+			"label": "xtask: comprehensive (fast)",
+			"type": "shell",
+			"command": "cargo run -p xtask -- comprehensive"
+		},
+		{
+			"label": "xtask: comprehensive (fast)",
+			"type": "shell",
+			"command": "cargo run -p xtask -- comprehensive"
+		},
+		{
+			"label": "xtask: comprehensive (fast)",
+			"type": "shell",
+			"command": "cargo run -p xtask -- comprehensive"
+		},
+		{
+			"label": "cargo fmt fix",
+			"type": "shell",
+			"command": "cargo fmt --all"
+		},
+		{
+			"label": "xtask: comprehensive (fast)",
+			"type": "shell",
+			"command": "cargo run -p xtask -- comprehensive"
 		}
 	]
 }

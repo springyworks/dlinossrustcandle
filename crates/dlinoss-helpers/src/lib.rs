@@ -40,7 +40,7 @@ impl CommonCli {
         let mut args = Self::parse();
         if args.dialog {
             // minimal interactive prompts; keep old-school
-            use std::io::{stdin, stdout, Write};
+            use std::io::{Write, stdin, stdout};
             let mut s = String::new();
             print!(
                 "UI (gui/tui/headless) [{}]: ",

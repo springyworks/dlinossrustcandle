@@ -112,7 +112,7 @@ cargo test --workspace
 ### Related READMEs
 
 - [Source Directory (`src/`)](../src/README.md)
-- [dlinossrustcandle# dlinossrustcandle](../README.md)
+- [dlinossrustcandle](../README.md)
 - [D-LinOSS Notebooks](../notebooks/README.md)
 - [Candle Probe (Migrated)](dlinoss-helpers/src/probe/README.md)
 <!-- docs-index:end -->

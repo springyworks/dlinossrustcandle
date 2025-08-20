@@ -1,14 +1,14 @@
 [package]
 name = "dlinoss-augment"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Trait-based helpers for D-LinOSS: scan/FFT conveniences built on Candle"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 candle = { package = "candle-core", version = "0.9.1", default-features = false }
 anyhow = "1"
-candle_tensor_augment = { path = "../../../../from_github/candle/0aEXPLORATION/candle_tensor_augment", optional = true }
+candle_tensor_augment = { version = "0.1.0", optional = true }
 
 [features]
 default = []

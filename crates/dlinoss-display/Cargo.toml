@@ -1,13 +1,13 @@
 [package]
 name = "dlinoss-display"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Display utilities for D-LinOSS (egui/egui_plot GUI, ratatui TUI, minifb)"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1"
-candle = { package = "candle-core", version = "0.9.1", path = "../../../../from_github/candle/candle-core", default-features = false }
+candle = { package = "candle-core", version = "0.9.1", default-features = false }
 dlinoss-augment = { path = "../dlinoss-augment" }
 
 # Optional UIs

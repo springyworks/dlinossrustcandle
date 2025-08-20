@@ -1,14 +1,14 @@
 [package]
 name = "dlinoss-helpers"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Helper utilities for D-LinOSS (CLI parsing, small utils)"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
-candle = { package = "candle-core", path = "../../../../from_github/candle/candle-core", default-features = false }
+candle = { package = "candle-core", version = "0.9.1", default-features = false }
 
 [features]
 default = []

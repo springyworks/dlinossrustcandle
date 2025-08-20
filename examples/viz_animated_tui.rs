@@ -5,12 +5,12 @@ use anyhow::Result;
 use candle::{DType, Device, Tensor};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line as TxtLine, Span};
 use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, Sparkline};
-use ratatui::Terminal;
 
 #[cfg(feature = "fft")]
 use dlinossrustcandle::TensorFftExt;
@@ -239,11 +239,7 @@ impl AnimatedState {
                         let t = t_start + (i as f32) * dt;
                         let period = 1.0 / (self.freq * 3.0);
                         let pulse_width = period * 0.1;
-                        if (t % period) < pulse_width {
-                            2.0
-                        } else {
-                            0.0
-                        }
+                        if (t % period) < pulse_width { 2.0 } else { 0.0 }
                     })
                     .collect();
                 Tensor::from_slice(&values, (length, 1), device)?
@@ -427,10 +423,8 @@ fn main() -> Result<()> {
 
     while running {
         // Update animation if not paused
-        if !paused {
-            if let Err(e) = app.update_animation() {
-                eprintln!("Animation error: {e}");
-            }
+        if !paused && let Err(e) = app.update_animation() {
+            eprintln!("Animation error: {e}");
         }
 
         // Draw

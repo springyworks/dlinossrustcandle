@@ -109,9 +109,9 @@ impl DLinOssLayer {
 
         // parameters processed with stability constraints (IMEX damped band)
         let dt = self.delta_t; // f64
-                               // Ensure G >= eps
+        // Ensure G >= eps
         let g_diag = self.g.abs()?.affine(1.0, 1e-4)?; // g = |g| + eps (f64)
-                                                       // s = 1 + dt * G
+        // s = 1 + dt * G
         let s_diag = g_diag.affine(dt, 1.0)?; // [m]
         let sqrt_s = s_diag.sqrt()?; // [m]
         let two_plus_dtg = s_diag.affine(1.0, 1.0)?; // (2 + dt*G)
@@ -119,7 +119,7 @@ impl DLinOssLayer {
         let inv_dt2 = 1.0 / (dt * dt);
         let a_low = two_plus_dtg.sub(&two_sqrt)?.affine(inv_dt2, 0.0)?; // [m]
         let a_high = two_plus_dtg.add(&two_sqrt)?.affine(inv_dt2, 0.0)?; // [m]
-                                                                         // Clamp a into [a_low, a_high] using relu-trick
+        // Clamp a into [a_low, a_high] using relu-trick
         let a_minus_low = self.a.sub(&a_low)?;
         let a_minus_high = self.a.sub(&a_high)?;
         let a_diag = a_low

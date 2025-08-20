@@ -3,6 +3,8 @@
 pub mod dlinoss;
 
 pub use dlinoss::{DLinOssLayer, DLinOssLayerConfig};
+// Re-export core Candle types for convenience in notebooks and downstream crates
+pub use candle::{DType, Device, Tensor};
 
 // Experimental helpers are provided via the dlinoss-augment sub-crate which wraps Candle ops.
 #[cfg(feature = "fft")]

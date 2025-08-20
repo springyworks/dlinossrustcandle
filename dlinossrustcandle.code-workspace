@@ -2,15 +2,6 @@
 	"folders": [
 		{
 			"path": "."
-		},
-		{
-			"path": "../dlinoss-rust"
-		},
-		{
-			"path": "../../../pyth/damped-linoss"
-		},
-		{
-			"path": "../../from_github/candle"
 		}
 	],
 	"settings": {
