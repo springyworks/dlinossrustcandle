@@ -110,9 +110,53 @@ mod support;
 #[cfg(feature = "fft")]
 use candlekos::Tensor as _TensorFftExtImportGuard;
 use support::{
-    compute_fft_naive as support_fft_naive, latent_energy_from_state_row, push_ring,
-    push_ring_phase,
-}; // ensure feature pulls in rfft symbol
+    compute_fft_naive as support_fft_naive, latent_energy_from_state_row, push_ring_phase,
+}; // ensure feature pulls in rfft symbol (legacy push_ring removed)
+
+// --- Time Series Infrastructure (professional plotting support) ---
+#[derive(Debug, Clone)]
+struct TimedSample {
+    idx: u64,   // monotonic sample index
+    value: f32, // scalar value
+}
+
+#[derive(Debug, Clone)]
+struct TimedRing {
+    data: Vec<TimedSample>,
+    capacity: usize,
+    drop_quarter: bool,
+    last_idx: u64,
+}
+
+impl TimedRing {
+    fn new(capacity: usize) -> Self {
+        Self { data: Vec::with_capacity(capacity), capacity, drop_quarter: true, last_idx: 0 }
+    }
+    fn push(&mut self, value: f32) {
+        let next_idx = self.last_idx + 1;
+        self.last_idx = next_idx;
+        if self.capacity > 0 && self.data.len() >= self.capacity {
+            if self.drop_quarter {
+                let drop = (self.capacity / 4).max(1);
+                self.data.drain(0..drop);
+            } else {
+                self.data.remove(0); // fallback single drop
+            }
+        }
+        self.data.push(TimedSample { idx: next_idx, value });
+    }
+    fn is_empty(&self) -> bool { self.data.is_empty() }
+    fn len(&self) -> usize { self.data.len() }
+    fn iter(&self) -> impl Iterator<Item = &TimedSample> { self.data.iter() }
+    fn latest_idx(&self) -> u64 { self.data.last().map(|s| s.idx).unwrap_or(self.last_idx) }
+    fn view_last(&self, count: usize) -> &[TimedSample] {
+        if self.data.len() <= count { &self.data } else { &self.data[self.data.len()-count..] }
+    }
+}
+
+impl TimedRing {
+    fn clear(&mut self) { self.data.clear(); }
+}
 
 // ---- Simulation Resources ----
 
@@ -138,15 +182,16 @@ struct DLinOssSim {
     t_len: usize,
     current_t: usize,
     input_cache: Vec<f32>,
-    output_ring: Vec<f32>,
-    input_ring: Vec<f32>,
+    output_ring: TimedRing,
+    input_ring: TimedRing,
     ring_capacity: usize,
-    latent_energy_ring: Vec<f32>,
+    latent_energy_ring: TimedRing,
     phase_points: Vec<[f32; 2]>,
     latent_pair: (usize, usize),
     state_snapshot: Option<Tensor>, // last w_seq (small window)
     spectrum_cache: Vec<[f32; 2]>,
-    latent_energy_peak: f32, // running max for stable plotting scale
+    latent_energy_peak: f32, // running max (legacy; may adjust)
+    camera_depth_ring: TimedRing, // camera distance to origin
 }
 
 #[derive(Component)]
@@ -172,6 +217,11 @@ struct VisualizationConfig {
     scale_factor: f32,
     max_scale: f32,
     spike_value: f32,
+    energy_scale: f32,
+    // Internal lattice grid
+    show_internal_grid: bool,
+    internal_grid_opacity: f32,
+    internal_grid_stride: usize,
 }
 
 // Camera / scene animation modes
@@ -187,7 +237,6 @@ enum CameraAnimMode {
 struct CameraAnimState {
     mode: CameraAnimMode,
     t: f32,
-    duration: f32,
     // Stored base transform for return or blending
     #[allow(dead_code)]
     base_transform: Transform,
@@ -205,7 +254,6 @@ impl Default for CameraAnimState {
         Self {
             mode: CameraAnimMode::Idle,
             t: 0.0,
-            duration: 16.0, // legacy field kept (unused externally) - prefer total
             base_transform: Transform::from_xyz(-4.0, 6.0, 14.0).looking_at(Vec3::ZERO, Vec3::Y),
             loop_index: 0,
             approach: 6.0,
@@ -260,7 +308,7 @@ fn camera_anim_system(
     let far_pos = Vec3::new(-6.0, 7.0, 44.0);
     // Helper smoothstep easing
     let smooth = |x: f32| (x * x * (3.0 - 2.0 * x)).clamp(0.0, 1.0);
-    let mut pos;
+    let pos;
     if t < approach {
         let p = smooth(t / approach);
         pos = far_pos.lerp(near_pos, p);
@@ -298,6 +346,10 @@ impl Default for VisualizationConfig {
             scale_factor: 0.55,
             max_scale: 1.2,
             spike_value: 12.0,
+            energy_scale: 1.0,
+            show_internal_grid: true,
+            internal_grid_opacity: 0.12,
+            internal_grid_stride: 1,
         }
     }
 }
@@ -314,6 +366,14 @@ struct AxisMarker(pub AxisKind);
 
 #[derive(Component)]
 struct SceneLight;
+
+// Marker for internal grid line entities
+#[derive(Component)]
+struct InternalGridLine {
+    axis: u8, // 0=X,1=Y,2=Z
+    i: usize,
+    j: usize,
+}
 
 #[derive(Resource, Default)]
 struct LightControl {
@@ -371,6 +431,26 @@ fn exposure_apply_system(
         dl.illuminance = light_control.original_directional * mult;
     }
     ambient.brightness = light_control.original_ambient * mult;
+}
+
+// Apply config-driven visibility for internal grid lines and update opacity
+fn internal_grid_system(
+    vis: Res<VisualizationConfig>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut q: Query<(&InternalGridLine, &Handle<StandardMaterial>, &mut Visibility)>,
+) {
+    if !vis.is_changed() { return; }
+    for (line, mat_h, mut visib) in q.iter_mut() {
+        let show = vis.show_internal_grid
+            && (line.i % vis.internal_grid_stride == 0)
+            && (line.j % vis.internal_grid_stride == 0);
+        *visib = if show { Visibility::Visible } else { Visibility::Hidden };
+        if let Some(mat) = materials.get_mut(mat_h) {
+            let mut c = mat.base_color;
+            c.set_a(vis.internal_grid_opacity);
+            mat.base_color = c;
+        }
+    }
 }
 
 // Camera
@@ -664,6 +744,57 @@ fn setup(
     spawn_edge(corners[2], corners[6]);
     spawn_edge(corners[3], corners[7]);
 
+    // Internal lattice grid lines (skip outer shell). Provide visual depth cues.
+    let grid_mesh = meshes.add(Mesh::from(Capsule3d { radius: 0.004, half_length: 0.5, ..default() }));
+    let (h, w, d) = (sim_cfg.h, sim_cfg.w, sim_cfg.d);
+    let len_x = w as f32;
+    let len_y = h as f32;
+    let len_z = d as f32;
+    let base_mat = materials.add(StandardMaterial {
+        base_color: Color::rgba(0.9, 0.9, 1.0, 0.12),
+        unlit: true,
+        alpha_mode: bevy::prelude::AlphaMode::Blend,
+        ..default()
+    });
+    // X-axis lines
+    if w > 1 { for z in 1..d.saturating_sub(1) { for y in 1..h.saturating_sub(1) {
+        let yf = y as f32 - h as f32 * 0.5;
+        let zf = z as f32 - d as f32 * 0.5;
+        commands.spawn((PbrBundle {
+            mesh: grid_mesh.clone(),
+            material: base_mat.clone(),
+            transform: Transform::from_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2))
+                .with_translation(Vec3::new(0.0, yf, zf))
+                .with_scale(Vec3::new(1.0, len_x, 1.0)),
+            ..default()
+        }, InternalGridLine { axis: 0, i: y, j: z }));
+    }}}
+    // Y-axis lines
+    if h > 1 { for z in 1..d.saturating_sub(1) { for x in 1..w.saturating_sub(1) {
+        let xf = x as f32 - w as f32 * 0.5;
+        let zf = z as f32 - d as f32 * 0.5;
+        commands.spawn((PbrBundle {
+            mesh: grid_mesh.clone(),
+            material: base_mat.clone(),
+            transform: Transform::from_translation(Vec3::new(xf, 0.0, zf))
+                .with_scale(Vec3::new(1.0, len_y, 1.0)),
+            ..default()
+        }, InternalGridLine { axis: 1, i: x, j: z }));
+    }}}
+    // Z-axis lines
+    if d > 1 { for y in 1..h.saturating_sub(1) { for x in 1..w.saturating_sub(1) {
+        let xf = x as f32 - w as f32 * 0.5;
+        let yf = y as f32 - h as f32 * 0.5;
+        commands.spawn((PbrBundle {
+            mesh: grid_mesh.clone(),
+            material: base_mat.clone(),
+            transform: Transform::from_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
+                .with_translation(Vec3::new(xf, yf, 0.0))
+                .with_scale(Vec3::new(1.0, len_z, 1.0)),
+            ..default()
+        }, InternalGridLine { axis: 2, i: x, j: y }));
+    }}}
+
     // Floor grid (optional simple plane)
     let mut plane = Mesh::new(PrimitiveTopology::TriangleList, Default::default());
     plane.insert_attribute(
@@ -795,21 +926,13 @@ fn sim_step(
                                 0.92 * *slot + 0.08 * (latest * (((i % len) as f32 * 0.001).sin()));
                         }
                     }
-                    {
-                        let cap = sim.ring_capacity;
-                        for val in vals.iter() {
-                            push_ring(&mut sim.output_ring, *val, cap);
-                        }
-                    }
+                    for val in vals.iter() { sim.output_ring.push(*val); }
                 }
             }
             // Keep matching inputs (reuse slice used) approximate per-step first channel
-            {
-                let cap = sim.ring_capacity;
-                for tloc in 0..remaining {
-                    let v = sim.input_cache[(start + tloc) * sim.input_dim];
-                    push_ring(&mut sim.input_ring, v, cap);
-                }
+            for tloc in 0..remaining {
+                let v = sim.input_cache[(start + tloc) * sim.input_dim];
+                sim.input_ring.push(v);
             }
             // Latent energy: ||x||^2 using last state part (x portion of w = [v,x])
             // Extract values needed first (avoid double borrow later)
@@ -835,9 +958,8 @@ fn sim_step(
             } else {
                 (None, None)
             };
-            let cap = sim.ring_capacity; // copy to avoid immutable borrow later
             if let Some(nv) = norm_val {
-                push_ring(&mut sim.latent_energy_ring, nv, cap);
+                sim.latent_energy_ring.push(nv);
                 if nv > sim.latent_energy_peak {
                     sim.latent_energy_peak = nv;
                 } else {
@@ -848,15 +970,16 @@ fn sim_step(
                 *latent_pushed = true;
             }
             if let Some(pp) = phase_pair_opt {
+                let cap = sim.ring_capacity; // capture to appease borrow checker (already mutable used above)
                 push_ring_phase(&mut sim.phase_points, pp, cap / 4);
             }
         }
     }
     // Ensure latent energy plot scrolls every frame (duplicate last if no new value)
     if !*latent_pushed {
-        let last = sim.latent_energy_ring.last().cloned().unwrap_or(0.0);
-        let cap = sim.ring_capacity; // copy to avoid simultaneous mutable/immutable borrow
-        push_ring(&mut sim.latent_energy_ring, last, cap);
+        if let Some(last) = sim.latent_energy_ring.data.last().map(|s| s.value) {
+            sim.latent_energy_ring.push(last);
+        }
     }
     *latent_pushed = false;
     sim.current_t += remaining;
@@ -932,6 +1055,11 @@ fn sim_step(
             }
             tf.scale = Vec3::splat(scale);
         }
+    }
+    // Push camera distance to origin for third time-series pane
+    if let Some(cam) = cam_tf {
+    let dist = cam.translation.length();
+    sim.camera_depth_ring.push(dist);
     }
 }
 
@@ -1099,7 +1227,7 @@ fn ui_system(
     });
     egui::SidePanel::left("left_panel").show(ctx, |ui| {
         ui.heading("Time Series");
-        simple_plot(
+        timed_plot_dual(
             ui,
             "Input/Output",
             &sim.input_ring,
@@ -1110,15 +1238,29 @@ fn ui_system(
         );
         ui.separator();
         ui.heading("Latent Energy (Approx)");
-        simple_plot_single_stable(
+        timed_plot_single(
             ui,
-            "Energy",
+            "Energy (||x||)",
             &sim.latent_energy_ring,
             120.0,
             egui::Color32::RED,
             vis.reverse_time_scroll,
             vis.time_window,
-            sim.latent_energy_peak,
+            Some(sim.latent_energy_peak),
+            vis.energy_scale,
+        );
+        ui.separator();
+        ui.heading("Camera Depth");
+        timed_plot_single(
+            ui,
+            "Depth (cam dist)",
+            &sim.camera_depth_ring,
+            100.0,
+            egui::Color32::LIGHT_GREEN,
+            vis.reverse_time_scroll,
+            vis.time_window,
+            None,
+            1.0,
         );
     });
     egui::SidePanel::right("right_panel").show(ctx, |ui| {
@@ -1131,6 +1273,12 @@ fn ui_system(
         ui.add(egui::Slider::new(&mut vis.time_window, 100..=4096).text("Time window"));
         ui.checkbox(&mut vis.show_center_axes, "Center axes");
         ui.checkbox(&mut vis.show_corner_axes, "Corner axes");
+        ui.collapsing("Internal Grid", |ui| {
+            ui.checkbox(&mut vis.show_internal_grid, "Show lattice");
+            ui.add(egui::Slider::new(&mut vis.internal_grid_opacity, 0.01..=0.4).text("Opacity"));
+            ui.add(egui::Slider::new(&mut vis.internal_grid_stride, 1..=6).text("Stride"));
+            ui.small("Stride hides lines where either index not divisible. Helps declutter.");
+        });
         ui.collapsing("Sphere Scale", |ui| {
             ui.add(egui::Slider::new(&mut vis.base_scale, 0.01..=0.3).text("Base"));
             ui.add(egui::Slider::new(&mut vis.scale_factor, 0.1..=2.0).text("Factor"));
@@ -1290,11 +1438,9 @@ fn compute_fft_window(sim: &mut DLinOssSim, size: usize) {
     if sim.output_ring.len() < size {
         return;
     }
-    let window = &sim.output_ring[sim.output_ring.len() - size..];
-    if window.len() != size {
-        return;
-    }
-    let tmp: Vec<f32> = window.to_vec();
+    let slice = sim.output_ring.view_last(size);
+    if slice.len() != size { return; }
+    let tmp: Vec<f32> = slice.iter().map(|s| s.value).collect();
     #[cfg(feature = "fft")]
     {
         if !fill_spectrum_candle(sim, &tmp) {
@@ -1426,224 +1572,118 @@ fn phase_plot(ui: &mut egui::Ui, pts: &[[f32; 2]], height: f32) {
 // push_ring_phase now imported from support
 
 // Very lightweight plot helpers (no external deps) using egui painter.
-fn simple_plot(
+// Timed plotting (handles monotonic indices, gaps, reverse scroll)
+fn timed_plot_dual(
     ui: &mut egui::Ui,
     title: &str,
-    a_full: &[f32],
-    b_full: &[f32],
+    a: &TimedRing,
+    b: &TimedRing,
     height: f32,
     reverse: bool,
-    time_window: usize,
+    max_visible: usize,
 ) {
     ui.label(title);
     let desired = egui::Vec2::new(ui.available_width(), height);
     let (rect, _resp) = ui.allocate_exact_size(desired, egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::DARK_GRAY));
-    let a = if a_full.len() <= time_window {
-        a_full
-    } else {
-        &a_full[a_full.len() - time_window..]
-    };
-    let b = if b_full.len() <= time_window {
-        b_full
-    } else {
-        &b_full[b_full.len() - time_window..]
-    };
-    let max_len = a.len().max(b.len()).max(1);
-    let (min_a, max_a) = min_max(a);
-    let (min_b, max_b) = min_max(b);
-    let min_v = min_a.min(min_b);
-    let max_v = max_a.max(max_b).max(min_v + 1e-6);
-    let to_point = |i: usize, v: f32| {
-        let xf = i as f32 / (max_len - 1).max(1) as f32;
-        let x = if reverse { 1.0 - xf } else { xf };
-        let y = if max_v > min_v {
-            (v - min_v) / (max_v - min_v)
-        } else {
-            0.5
-        };
-        egui::pos2(
-            rect.left() + x * rect.width(),
-            rect.bottom() - y * rect.height(),
-        )
-    };
-    polyline(painter.clone(), a, egui::Color32::LIGHT_BLUE, to_point);
-    polyline(painter.clone(), b, egui::Color32::GOLD, to_point);
-    // Time axis labels when reverse (0 at right, negative to left)
-    if reverse {
-        let ticks = 5.min(max_len - 1);
-        for i in 0..=ticks {
-            let frac = i as f32 / ticks.max(1) as f32;
-            let x = rect.left() + (1.0 - frac) * rect.width();
-            let t_val = -((frac * (max_len - 1) as f32) as i32);
-            let label = if t_val == 0 {
-                "0".to_string()
-            } else {
-                format!("{}", t_val)
-            };
-            painter.text(
-                egui::pos2(x, rect.bottom() + 2.0),
-                egui::Align2::CENTER_TOP,
-                label,
-                egui::FontId::monospace(10.0),
-                egui::Color32::GRAY,
-            );
+    if a.is_empty() && b.is_empty() { return; }
+    let latest = a.latest_idx().max(b.latest_idx());
+    let need_scroll = (latest as usize) >= max_visible;
+    let visible_start = if need_scroll { latest.saturating_sub(max_visible as u64) } else { 0 };
+    // Collect visible samples with normalized x [0,1]
+    let series = [(a, egui::Color32::LIGHT_BLUE), (b, egui::Color32::GOLD)];
+    // Determine min/max values
+    let mut min_v = f32::MAX;
+    let mut max_v = f32::MIN;
+    for (ring, _) in &series {
+        for s in ring.iter().filter(|s| s.idx >= visible_start) {
+            if s.value < min_v { min_v = s.value; }
+            if s.value > max_v { max_v = s.value; }
         }
     }
+    if max_v <= min_v { max_v = min_v + 1e-6; }
+    for (ring, color) in &series {
+        let mut pts: Vec<egui::Pos2> = Vec::new();
+        let mut last_idx_opt: Option<u64> = None;
+        for samp in ring.iter().filter(|s| s.idx >= visible_start) {
+            // Break on gaps >1 to avoid vertical lines
+            if let Some(last) = last_idx_opt { if samp.idx > last + 1 { if pts.len()>1 { painter.add(egui::Shape::line(pts.clone(), egui::Stroke::new(1.0,*color))); } pts.clear(); } }
+            last_idx_opt = Some(samp.idx);
+            let domain_span = if need_scroll { max_visible as u64 } else { max_visible as u64 }; // constant span for clarity
+            let rel = if need_scroll {
+                (samp.idx - visible_start) as f32 / (domain_span.max(1) as f32)
+            } else {
+                // pad left (or right) with blank until filled
+                (samp.idx as f32) / (domain_span.max(1) as f32)
+            };
+            let x = if reverse { 1.0 - rel } else { rel };
+            let norm = (samp.value - min_v) / (max_v - min_v);
+            let pos = egui::pos2(rect.left() + x * rect.width(), rect.bottom() - norm * rect.height());
+            pts.push(pos);
+        }
+        if pts.len() > 1 { painter.add(egui::Shape::line(pts, egui::Stroke::new(1.0, *color))); }
+    }
+    // Draw an outline baseline tick markers for 0..max_visible samples (optional lightweight)
 }
 
-fn simple_plot_single(
+fn timed_plot_single(
     ui: &mut egui::Ui,
     title: &str,
-    a_full: &[f32],
+    ring: &TimedRing,
     height: f32,
     color: egui::Color32,
     reverse: bool,
-    time_window: usize,
+    max_visible: usize,
+    fixed_peak: Option<f32>,
+    scale: f32,
 ) {
     ui.label(title);
     let desired = egui::Vec2::new(ui.available_width(), height);
     let (rect, _resp) = ui.allocate_exact_size(desired, egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::DARK_GRAY));
-    let a = if a_full.len() <= time_window {
-        a_full
-    } else {
-        &a_full[a_full.len() - time_window..]
-    };
-    let max_len = a.len().max(1);
-    let (min_a, max_a) = min_max(a);
-    let max_v = max_a.max(min_a + 1e-6);
-    let to_point = |i: usize, v: f32| {
-        let xf = i as f32 / (max_len - 1).max(1) as f32;
-        let x = if reverse { 1.0 - xf } else { xf };
-        let y = if max_v > min_a {
-            (v - min_a) / (max_v - min_a)
+    if ring.is_empty() { return; }
+    let latest = ring.latest_idx();
+    let need_scroll = (latest as usize) >= max_visible;
+    let visible_start = if need_scroll { latest.saturating_sub(max_visible as u64) } else { 0 };
+    let mut min_v = f32::MAX;
+    let mut max_v = f32::MIN;
+    let mut sum = 0.0f32; let mut count = 0usize;
+    for s in ring.iter().filter(|s| s.idx >= visible_start) {
+        let v = s.value * scale;
+        if v < min_v { min_v = v; }
+        if v > max_v { max_v = v; }
+        sum += v; count += 1;
+    }
+    if let Some(pk) = fixed_peak { let pk = pk * scale; if pk > max_v { max_v = pk; } }
+    if max_v <= min_v { max_v = min_v + 1e-6; }
+    let mut pts: Vec<egui::Pos2> = Vec::new();
+    let mut last_idx_opt: Option<u64> = None;
+    for samp in ring.iter().filter(|s| s.idx >= visible_start) {
+        if let Some(last) = last_idx_opt { if samp.idx > last + 1 { if pts.len()>1 { painter.add(egui::Shape::line(pts.clone(), egui::Stroke::new(1.0,color))); } pts.clear(); } }
+        last_idx_opt = Some(samp.idx);
+        let domain_span = max_visible as u64; // fixed domain length
+        let rel = if need_scroll {
+            (samp.idx - visible_start) as f32 / (domain_span.max(1) as f32)
         } else {
-            0.5
+            (samp.idx as f32) / (domain_span.max(1) as f32)
         };
-        egui::pos2(
-            rect.left() + x * rect.width(),
-            rect.bottom() - y * rect.height(),
-        )
-    };
-    polyline(painter.clone(), a, color, to_point);
-    if reverse {
-        let max_len = a.len().max(1);
-        let ticks = 5.min(max_len - 1);
-        for i in 0..=ticks {
-            let frac = i as f32 / ticks.max(1) as f32;
-            let x = rect.left() + (1.0 - frac) * rect.width();
-            let t_val = -((frac * (max_len - 1) as f32) as i32);
-            let label = if t_val == 0 {
-                "0".to_string()
-            } else {
-                format!("{}", t_val)
-            };
-            painter.text(
-                egui::pos2(x, rect.bottom() + 2.0),
-                egui::Align2::CENTER_TOP,
-                label,
-                egui::FontId::monospace(10.0),
-                egui::Color32::GRAY,
-            );
-        }
+        let x = if reverse { 1.0 - rel } else { rel };
+        let v = samp.value * scale;
+        let norm = (v - min_v) / (max_v - min_v);
+        let pos = egui::pos2(rect.left() + x * rect.width(), rect.bottom() - norm * rect.height());
+        pts.push(pos);
+    }
+    if pts.len() > 1 { painter.add(egui::Shape::line(pts, egui::Stroke::new(1.0, color))); }
+    if count > 1 {
+        let mean = sum / count as f32;
+        let norm_mean = (mean - min_v)/(max_v-min_v);
+        let y = rect.bottom() - norm_mean * rect.height();
+        painter.line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], egui::Stroke::new(1.0, egui::Color32::from_gray(110)));
     }
 }
 
-// Stable variant: uses provided max_y (peak) for vertical scale (with fallback to data max)
-fn simple_plot_single_stable(
-    ui: &mut egui::Ui,
-    title: &str,
-    a_full: &[f32],
-    height: f32,
-    color: egui::Color32,
-    reverse: bool,
-    time_window: usize,
-    peak: f32,
-) {
-    ui.label(title);
-    let desired = egui::Vec2::new(ui.available_width(), height);
-    let (rect, _resp) = ui.allocate_exact_size(desired, egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::DARK_GRAY));
-    let a = if a_full.len() <= time_window {
-        a_full
-    } else {
-        &a_full[a_full.len() - time_window..]
-    };
-    let max_len = a.len().max(1);
-    let (min_a, max_a_data) = min_max(a);
-    let max_v = peak.max(max_a_data).max(min_a + 1e-6);
-    let to_point = |i: usize, v: f32| {
-        let xf = i as f32 / (max_len - 1).max(1) as f32;
-        let x = if reverse { 1.0 - xf } else { xf };
-        let y = if max_v > min_a {
-            (v - min_a) / (max_v - min_a)
-        } else {
-            0.5
-        };
-        egui::pos2(
-            rect.left() + x * rect.width(),
-            rect.bottom() - y * rect.height(),
-        )
-    };
-    polyline(painter.clone(), a, color, to_point);
-    if reverse {
-        let ticks = 5.min(max_len - 1);
-        for i in 0..=ticks {
-            let frac = i as f32 / ticks.max(1) as f32;
-            let x = rect.left() + (1.0 - frac) * rect.width();
-            let t_val = -((frac * (max_len - 1) as f32) as i32);
-            let label = if t_val == 0 {
-                "0".to_string()
-            } else {
-                format!("{}", t_val)
-            };
-            painter.text(
-                egui::pos2(x, rect.bottom() + 2.0),
-                egui::Align2::CENTER_TOP,
-                label,
-                egui::FontId::monospace(10.0),
-                egui::Color32::GRAY,
-            );
-        }
-    }
-}
-
-fn min_max(slice: &[f32]) -> (f32, f32) {
-    if slice.is_empty() {
-        return (0.0, 0.0);
-    }
-    let mut min_v = slice[0];
-    let mut max_v = slice[0];
-    for &v in slice.iter().skip(1) {
-        if v < min_v {
-            min_v = v;
-        }
-        if v > max_v {
-            max_v = v;
-        }
-    }
-    (min_v, max_v)
-}
-
-fn polyline<F: Fn(usize, f32) -> egui::Pos2>(
-    painter: egui::Painter,
-    data: &[f32],
-    color: egui::Color32,
-    map: F,
-) {
-    if data.len() < 2 {
-        return;
-    }
-    let mut points = Vec::with_capacity(data.len());
-    for (i, &v) in data.iter().enumerate() {
-        points.push(map(i, v));
-    }
-    painter.add(egui::Shape::line(points, egui::Stroke::new(1.0, color)));
-}
 
 pub fn main() -> Result<()> {
     // Initialize deterministic layer
@@ -1660,6 +1700,7 @@ pub fn main() -> Result<()> {
     let w = 10usize;
     let d = 8usize; // moderate grid
     let volume = vec![0f32; h * w * d];
+    let ring_capacity = 4096;
     let sim_res = DLinOssSim {
         layer,
         last_volume: volume,
@@ -1668,15 +1709,16 @@ pub fn main() -> Result<()> {
         t_len: 10_000,
         current_t: 0,
         input_cache: vec![0f32; 10_000 * cfg.input_dim],
-        output_ring: Vec::with_capacity(4096),
-        input_ring: Vec::with_capacity(4096),
-        ring_capacity: 4096,
-        latent_energy_ring: Vec::with_capacity(4096),
+        output_ring: TimedRing::new(ring_capacity),
+        input_ring: TimedRing::new(ring_capacity),
+        ring_capacity: ring_capacity,
+        latent_energy_ring: TimedRing::new(ring_capacity),
         phase_points: Vec::with_capacity(4096),
         latent_pair: (0, 1),
         state_snapshot: None,
         spectrum_cache: Vec::with_capacity(1024),
         latent_energy_peak: 1e-6,
+        camera_depth_ring: TimedRing::new(ring_capacity),
     };
     // Generate session prefix (UTC seconds) for capture naming
     let ts = std::time::SystemTime::now()
@@ -1736,6 +1778,7 @@ pub fn main() -> Result<()> {
                     frame_counter,
                     camera_orbit_system,
                     axis_visibility_system,
+                    internal_grid_system,
                     camera_anim_system,
                 ),
             );
