@@ -959,6 +959,8 @@ fn sim_step(
                 (None, None)
             };
             if let Some(nv) = norm_val {
+                // Push two samples per step for double-rate graph
+                sim.latent_energy_ring.push(nv);
                 sim.latent_energy_ring.push(nv);
                 if nv > sim.latent_energy_peak {
                     sim.latent_energy_peak = nv;
@@ -978,6 +980,7 @@ fn sim_step(
     // Ensure latent energy plot scrolls every frame (duplicate last if no new value)
     if !*latent_pushed {
         if let Some(last) = sim.latent_energy_ring.data.last().map(|s| s.value) {
+            sim.latent_energy_ring.push(last);
             sim.latent_energy_ring.push(last);
         }
     }
