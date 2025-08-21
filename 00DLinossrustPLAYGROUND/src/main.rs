@@ -1,5 +1,116 @@
-use bevy::input::mouse::MouseButton;
+use anyhow::Result;
+use std::env;
 use bevy::core_pipeline::tonemapping::Tonemapping; // added for tonemapper enum usage
+use bevy::input::mouse::MouseButton;
+use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, PrimitiveTopology};
+use bevy::render::render_asset::RenderAssetUsages;
+use bevy_egui::{EguiContexts, egui, EguiPlugin};
+use dlinossrustcandle::{Device, DType, Tensor, DLinOssLayer, DLinOssLayerConfig};
+mod support;
+use support::{latent_energy_from_state_row, push_ring_phase};
+
+macro_rules! info { ($($t:tt)*) => { println!($($t)*); } }
+
+// Core visualization configuration
+#[derive(Resource)]
+struct VisualizationConfig {
+    depth_scale_attenuation: bool,
+    reverse_time_scroll: bool,
+    time_window: usize,
+    show_center_axes: bool,
+    show_corner_axes: bool,
+    base_scale: f32,
+    scale_factor: f32,
+    max_scale: f32,
+    spike_value: f32,
+    energy_scale: f32,
+    show_internal_grid: bool,
+    internal_grid_opacity: f32,
+    internal_grid_stride: usize,
+    wave_mode: WaveMode,
+    show_volume_stats: bool,
+    show_energy_derivative: bool,
+    show_advanced_scales: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WaveMode { Normal, ComplexWave }
+
+#[derive(Resource)]
+struct SimConfig {
+    h: usize,
+    w: usize,
+    d: usize,
+    paused: bool,
+    capture: bool,
+    frame_counter: u64,
+    capture_start_frame: Option<u64>,
+    max_capture_frames: u64,
+    capture_prefix: String,
+}
+
+impl Default for SimConfig { fn default() -> Self { Self { h:8,w:8,d:8,paused:false,capture:false,frame_counter:0,capture_start_frame:None,max_capture_frames:300,capture_prefix:"sess".into() } } }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CameraAnimMode { Idle, FlyThrough, HalluFly, AutoRotate }
+
+#[derive(Resource)]
+struct CameraAnimState {
+    mode: CameraAnimMode,
+    t: f32,
+    loop_index: u64,
+    approach: f32,
+    pause: f32,
+    retreat: f32,
+    total: f32,
+    base_transform: Transform,
+}
+
+impl Default for CameraAnimState { fn default() -> Self { Self { mode: CameraAnimMode::Idle, t:0.0, loop_index:0, approach:4.0, pause:3.0, retreat:4.0, total:11.0, base_transform: Transform::IDENTITY } } }
+
+#[derive(Component)]
+struct VoxelSphere { idx: usize }
+
+#[derive(Clone, Copy)]
+struct TimedSample { idx: u64, value: f32 }
+
+struct TimedRing { data: Vec<TimedSample>, capacity: usize, next_idx: u64 }
+impl TimedRing {
+    fn new(capacity: usize) -> Self { Self { data: Vec::with_capacity(capacity.min(2048)), capacity, next_idx:0 } }
+    fn push(&mut self, v: f32) { if self.capacity>0 && self.data.len()>=self.capacity { let drop = (self.capacity/4).max(1); self.data.drain(0..drop); } self.data.push(TimedSample{ idx:self.next_idx, value:v }); self.next_idx+=1; }
+    fn clear(&mut self){ self.data.clear(); }
+    fn is_empty(&self)->bool{ self.data.is_empty() }
+    fn latest_idx(&self)->u64{ self.data.last().map(|s|s.idx).unwrap_or(0) }
+    fn iter(&self)->std::slice::Iter<'_,TimedSample>{ self.data.iter() }
+}
+
+#[derive(Resource)]
+struct DLinOssSim {
+    layer: DLinOssLayer,
+    last_volume: Vec<f32>,
+    output_ring: TimedRing,
+    input_ring: TimedRing,
+    latent_energy_ring: TimedRing,
+    phase_points: Vec<[f32;2]>,
+    latent_energy_peak: f32,
+    camera_depth_ring: TimedRing,
+    input_dim: usize,
+    device: Device,
+    current_t: usize,
+    t_len: usize,
+    input_cache: Vec<f32>,
+    ring_capacity: usize,
+    latent_pair: (usize,usize),
+    state_snapshot: Option<Tensor>,
+    spectrum_cache: Vec<[f32;2]>,
+    volume_mean_ring: TimedRing,
+    volume_var_ring: TimedRing,
+    latent_energy_deriv_ring: TimedRing,
+    last_latent_energy: f32,
+}
+
+// (Other existing use statements for your layer, rings, etc. should remain below or above as appropriate)
 // Camera orbit/zoom controller (turntable pattern)
 #[derive(Resource)]
 struct CameraOrbitController {
@@ -87,182 +198,8 @@ fn camera_orbit_system(
 // - egui 4-pane dashboard (time series, latent energy, FFT placeholder, 3D controls).
 // - Deterministic D-LinOSS forward simulation updating a synthetic volume.
 // - Frame capture toggle (writes PNG frames under images_store/showcase/).
-//
-// Next phases (not yet implemented):
-// - True FFT live spectrum (reuse candle FFT when feature enabled)
-// - Phase portrait & latent component selection
-// - Headless export batch mode
-// - Colormap editor & auto scaling
+// (ui_system function defined later – stray previous inline UI removed)
 
-use anyhow::Result;
-use bevy::prelude::*;
-use bevy::render::render_asset::RenderAssetUsages;
-use bevy::render::render_resource::PrimitiveTopology;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use bevy_egui::{EguiContexts, EguiPlugin, egui};
-use candlekos::{DType, Device, Tensor};
-use dlinossrustcandle::{DLinOssLayer, DLinOssLayerConfig};
-use image::{ImageBuffer, Rgba};
-use std::env;
-use std::fs::{self, File};
-use std::io::BufWriter;
-mod support;
-#[cfg(feature = "fft")]
-use candlekos::Tensor as _TensorFftExtImportGuard;
-use support::{
-    compute_fft_naive as support_fft_naive, latent_energy_from_state_row, push_ring_phase,
-}; // ensure feature pulls in rfft symbol (legacy push_ring removed)
-
-// --- Time Series Infrastructure (professional plotting support) ---
-#[derive(Debug, Clone)]
-struct TimedSample {
-    idx: u64,   // monotonic sample index
-    value: f32, // scalar value
-}
-
-#[derive(Debug, Clone)]
-struct TimedRing {
-    data: Vec<TimedSample>,
-    capacity: usize,
-    drop_quarter: bool,
-    last_idx: u64,
-}
-
-impl TimedRing {
-    fn new(capacity: usize) -> Self {
-        Self { data: Vec::with_capacity(capacity), capacity, drop_quarter: true, last_idx: 0 }
-    }
-    fn push(&mut self, value: f32) {
-        let next_idx = self.last_idx + 1;
-        self.last_idx = next_idx;
-        if self.capacity > 0 && self.data.len() >= self.capacity {
-            if self.drop_quarter {
-                let drop = (self.capacity / 4).max(1);
-                self.data.drain(0..drop);
-            } else {
-                self.data.remove(0); // fallback single drop
-            }
-        }
-        self.data.push(TimedSample { idx: next_idx, value });
-    }
-    fn is_empty(&self) -> bool { self.data.is_empty() }
-    fn len(&self) -> usize { self.data.len() }
-    fn iter(&self) -> impl Iterator<Item = &TimedSample> { self.data.iter() }
-    fn latest_idx(&self) -> u64 { self.data.last().map(|s| s.idx).unwrap_or(self.last_idx) }
-    fn view_last(&self, count: usize) -> &[TimedSample] {
-        if self.data.len() <= count { &self.data } else { &self.data[self.data.len()-count..] }
-    }
-}
-
-impl TimedRing {
-    fn clear(&mut self) { self.data.clear(); }
-}
-
-// ---- Simulation Resources ----
-
-#[derive(Resource)]
-struct SimConfig {
-    h: usize,
-    w: usize,
-    d: usize,
-    paused: bool,
-    capture: bool,
-    frame_counter: u64,
-    capture_start_frame: Option<u64>, // frame index when capture enabled
-    max_capture_frames: u64,          // limit to avoid file explosion
-    capture_prefix: String,           // session unique prefix for movie assembly
-}
-
-#[derive(Resource)]
-struct DLinOssSim {
-    layer: DLinOssLayer,
-    last_volume: Vec<f32>, // h * w * d values (current slice at given time)
-    device: Device,
-    input_dim: usize,
-    t_len: usize,
-    current_t: usize,
-    input_cache: Vec<f32>,
-    output_ring: TimedRing,
-    input_ring: TimedRing,
-    ring_capacity: usize,
-    latent_energy_ring: TimedRing,
-    phase_points: Vec<[f32; 2]>,
-    latent_pair: (usize, usize),
-    state_snapshot: Option<Tensor>, // last w_seq (small window)
-    spectrum_cache: Vec<[f32; 2]>,
-    latent_energy_peak: f32, // running max (legacy; may adjust)
-    camera_depth_ring: TimedRing, // camera distance to origin
-}
-
-#[derive(Component)]
-struct VoxelSphere {
-    idx: usize,
-}
-
-// Visualization configuration / ergonomics toggles
-#[derive(Resource)]
-struct VisualizationConfig {
-    // If true, apply an extra scale attenuation with distance from camera to enhance depth perception
-    depth_scale_attenuation: bool,
-    // If true, time-series plots scroll right->left (newest data on the right), else left->right
-    reverse_time_scroll: bool,
-    // Length of visible time window in samples for plots
-    time_window: usize,
-    // Show origin-centered axes
-    show_center_axes: bool,
-    // Show corner (edge) axes instead (future multi-matrix support)
-    show_corner_axes: bool,
-    // Sphere sizing controls
-    base_scale: f32,
-    scale_factor: f32,
-    max_scale: f32,
-    spike_value: f32,
-    energy_scale: f32,
-    // Internal lattice grid
-    show_internal_grid: bool,
-    internal_grid_opacity: f32,
-    internal_grid_stride: usize,
-}
-
-// Camera / scene animation modes
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-enum CameraAnimMode {
-    #[default]
-    Idle,
-    FlyThrough, // in-out dive and retreat loop
-    HalluFly,   // hallucinating variant with enhanced voxel choreography
-}
-
-#[derive(Resource, Debug)]
-struct CameraAnimState {
-    mode: CameraAnimMode,
-    t: f32,
-    // Stored base transform for return or blending
-    #[allow(dead_code)]
-    base_transform: Transform,
-    loop_index: u64,
-    // Path phase durations (approach -> pause -> retreat)
-    approach: f32,
-    pause: f32,
-    retreat: f32,
-    // Cached derived totals (updated if durations change)
-    total: f32,
-}
-
-impl Default for CameraAnimState {
-    fn default() -> Self {
-        Self {
-            mode: CameraAnimMode::Idle,
-            t: 0.0,
-            base_transform: Transform::from_xyz(-4.0, 6.0, 14.0).looking_at(Vec3::ZERO, Vec3::Y),
-            loop_index: 0,
-            approach: 6.0,
-            pause: 4.0, // requested steady 4s pause
-            retreat: 6.0,
-            total: 6.0 + 4.0 + 6.0,
-        }
-    }
-}
 
 // Fly Through & HalluFly docs:
 // - Fly Through: cinematic path that starts far (z ~ 42), dives toward/through the voxel cube, tightens
@@ -309,6 +246,20 @@ fn camera_anim_system(
     // Helper smoothstep easing
     let smooth = |x: f32| (x * x * (3.0 - 2.0 * x)).clamp(0.0, 1.0);
     let pos;
+    if state.mode == CameraAnimMode::AutoRotate {
+        // Slow orbit around origin at fixed radius
+        let radius = 18.0;
+        let speed = 0.18; // radians/sec (slow)
+        let angle = state.t * speed;
+        let x = radius * angle.cos();
+        let z = radius * angle.sin();
+        let y = 7.0 + 2.0 * (angle * 0.3).sin();
+        pos = Vec3::new(x, y, z);
+        if let Ok(mut tf) = q_cam.get_single_mut() {
+            *tf = Transform::from_translation(pos).looking_at(Vec3::ZERO, Vec3::Y);
+        }
+        return;
+    }
     if t < approach {
         let p = smooth(t / approach);
         pos = far_pos.lerp(near_pos, p);
@@ -350,6 +301,10 @@ impl Default for VisualizationConfig {
             show_internal_grid: true,
             internal_grid_opacity: 0.12,
             internal_grid_stride: 1,
+            wave_mode: WaveMode::Normal,
+            show_volume_stats: true,
+            show_energy_derivative: true,
+            show_advanced_scales: false,
         }
     }
 }
@@ -995,7 +950,7 @@ fn sim_step(
         .unwrap_or(false);
     // Procedural continuous animation: update last_volume with a 3D multi-frequency wave
     // Use current_t as a proxy for time and advance a fractional phase each iteration.
-    let tphase = sim_cfg.frame_counter as f32 * 0.03; // frame-based phase prevents halting growth
+    let tphase = sim_cfg.frame_counter as f32 * 0.09; // increased speed: 3x faster
     let (h, w, d) = (sim_cfg.h, sim_cfg.w, sim_cfg.d);
     let hallu = anim
         .as_ref()
@@ -1021,17 +976,34 @@ fn sim_step(
                 let xf = x as f32 / w as f32;
                 let yf = y as f32 / h as f32;
                 let zf = z as f32 / d as f32;
-                let mut v = (tphase + xf * 6.28).sin() * (tphase * 0.7 + yf * 10.0).cos() * 0.5
-                    + 0.5 * (tphase * 1.3 + zf * 12.57).sin();
-                if hallu {
-                    let radial =
-                        ((xf - 0.5).powi(2) + (yf - 0.5).powi(2) + (zf - 0.5).powi(2)).sqrt();
-                    let swirl = (tphase * 2.4 + (xf + yf * 1.3 - zf) * 18.0).sin();
-                    let breathe = (tphase * 1.7 + radial * 10.0).cos();
-                    v += 0.6 * swirl * breathe;
+                let mut v = 0.0;
+                let wave_mode = vis.as_ref().map(|v| v.wave_mode).unwrap_or(WaveMode::Normal);
+                match wave_mode {
+                    WaveMode::Normal => {
+                        v = (tphase + xf * 6.28).sin() * (tphase * 2.1 + yf * 10.0).cos() * 0.5
+                            + 0.5 * (tphase * 3.9 + zf * 12.57).sin();
+                        if hallu {
+                            let radial =
+                                ((xf - 0.5).powi(2) + (yf - 0.5).powi(2) + (zf - 0.5).powi(2)).sqrt();
+                            let swirl = (tphase * 2.4 + (xf + yf * 1.3 - zf) * 18.0).sin();
+                            let breathe = (tphase * 1.7 + radial * 10.0).cos();
+                            v += 0.6 * swirl * breathe;
+                        }
+                    }
+                    WaveMode::ComplexWave => {
+                        // Complex synthetic wave: sum of multiple sin/cos with phase offsets
+                        let freq1 = 3.0 + 2.0 * (tphase * 0.6).sin();
+                        let freq2 = 5.0 + 1.5 * (tphase * 0.9).cos();
+                        let freq3 = 7.0 + 1.0 * (tphase * 1.2).sin();
+                        let phase1 = tphase * 3.6 + xf * freq1 + yf * freq2;
+                        let phase2 = tphase * 2.4 + zf * freq3 + xf * freq2;
+                        let phase3 = tphase * 4.5 + yf * freq1 + zf * freq2;
+                        v = 0.4 * (phase1).sin() + 0.3 * (phase2).cos() + 0.2 * (phase3).sin();
+                        v += 0.15 * ((xf + yf + zf + tphase * 1.5) * 12.0).cos();
+                    }
                 }
                 if let Some(slot) = sim.last_volume.get_mut(idx) {
-                    *slot = 0.85 * *slot + 0.15 * v; // smooth to avoid harsh flicker
+                    *slot = 0.85 * *slot + 0.15 * v;
                 }
             }
         }
@@ -1064,9 +1036,29 @@ fn sim_step(
     let dist = cam.translation.length();
     sim.camera_depth_ring.push(dist);
     }
+    // --- Extra metrics ---
+    // Volume statistics (mean & variance) using simple pass (avoid realloc) then push.
+    if !sim.last_volume.is_empty() {
+        let mut sum = 0.0f32; let mut sum2 = 0.0f32; let n = sim.last_volume.len() as f32;
+        for &v in &sim.last_volume { sum += v; sum2 += v * v; }
+        let mean = sum / n;
+        let var = (sum2 / n - mean * mean).max(0.0);
+        sim.volume_mean_ring.push(mean);
+        sim.volume_var_ring.push(var);
+    }
+    // Latent energy derivative (approx) from latest peak-corrected nv (reusing last pushed value if exists)
+    let prev_latent = sim.last_latent_energy;
+    let latest_latent = sim.latent_energy_ring.data.last().map(|s| s.value);
+    if let Some(last) = latest_latent {
+        if prev_latent != 0.0 { sim.latent_energy_deriv_ring.push(last - prev_latent); }
+        sim.last_latent_energy = last;
+    }
 }
 
 // Egui UI (4 panes skeleton)
+// OLD ui_system implementation removed.
+
+// Clean ui_system implementation
 fn ui_system(
     mut contexts: EguiContexts,
     mut sim_cfg: ResMut<SimConfig>,
@@ -1083,418 +1075,114 @@ fn ui_system(
 ) {
     let ctx = contexts.ctx_mut();
     egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            ui.heading("D-LinOSS 3D Playground");
-            if ui
-                .button(if sim_cfg.paused {
-                    "Run Simulation"
-                } else {
-                    "Pause Simulation"
-                })
-                .clicked()
-            {
-                sim_cfg.paused = !sim_cfg.paused;
-            }
-            if ui.button("Restart").clicked() {
-                // Reset simulation state resources
-                sim.current_t = 0;
-                sim.last_volume.fill(0.0);
-                sim.output_ring.clear();
-                sim.input_ring.clear();
-                sim.latent_energy_ring.clear();
-                sim.phase_points.clear();
-                sim.state_snapshot = None;
-                sim.spectrum_cache.clear();
-                sim_cfg.frame_counter = 0;
-                sim_cfg.paused = false; // resume running
-            }
-            if ui.button("Spike Cell").clicked() {
-                if let Some(first) = sim.last_volume.get_mut(0) {
-                    *first = vis.spike_value; // configurable spike
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.heading("D-LinOSS 3D Playground");
+                ui.separator();
+                ui.label(format!("Frame: {}", sim_cfg.frame_counter));
+                ui.label(format!("Grid: {}x{}x{}", sim_cfg.h, sim_cfg.w, sim_cfg.d));
+            });
+            ui.horizontal_wrapped(|ui| {
+                if ui.button(if sim_cfg.paused { "Run Simulation" } else { "Pause Simulation" }).clicked() { sim_cfg.paused = !sim_cfg.paused; }
+                if ui.button("Restart").clicked() {
+                    sim.current_t = 0; sim.last_volume.fill(0.0); sim.output_ring.clear(); sim.input_ring.clear();
+                    sim.latent_energy_ring.clear(); sim.phase_points.clear(); sim.state_snapshot = None; sim.spectrum_cache.clear();
+                    sim_cfg.frame_counter = 0; sim_cfg.paused = false; sim.latent_energy_peak = 1e-6;
                 }
-            }
-            if ui
-                .button(if sim_cfg.capture {
-                    "Stop Capture"
-                } else {
-                    "Start Capture"
-                })
-                .clicked()
-            {
-                sim_cfg.capture = !sim_cfg.capture;
-                if sim_cfg.capture {
-                    sim_cfg.capture_start_frame = Some(sim_cfg.frame_counter);
-                    info!(
-                        "Capture started (prefix={}, max {} frames)",
-                        sim_cfg.capture_prefix, sim_cfg.max_capture_frames
-                    );
-                } else {
-                    info!("Capture stopped");
+                if ui.button("Spike Cell").clicked() { if let Some(first) = sim.last_volume.get_mut(0) { *first = vis.spike_value; }}
+                if ui.button(if sim_cfg.capture { "Stop Capture" } else { "Start Capture" }).clicked() {
+                    sim_cfg.capture = !sim_cfg.capture;
+                    if sim_cfg.capture { sim_cfg.capture_start_frame = Some(sim_cfg.frame_counter); info!("Capture started (prefix={}, max {} frames)", sim_cfg.capture_prefix, sim_cfg.max_capture_frames); }
+                    else { info!("Capture stopped"); }
                 }
-            }
-            ui.label(format!("Frame: {}", sim_cfg.frame_counter));
-            ui.separator();
-            if ui
-                .button(match anim.mode {
-                    CameraAnimMode::Idle => "Fly Through",
-                    _ => "Stop Fly",
-                })
-                .clicked()
-            {
-                anim.t = 0.0;
-                anim.mode = match anim.mode {
-                    CameraAnimMode::Idle => CameraAnimMode::FlyThrough,
-                    _ => CameraAnimMode::Idle,
-                };
-            }
-            if ui
-                .button(match anim.mode {
-                    CameraAnimMode::HalluFly => "Stop HalluFly",
-                    _ => "HalluFly",
-                })
-                .clicked()
-            {
-                anim.t = 0.0;
-                anim.mode = match anim.mode {
-                    CameraAnimMode::HalluFly => CameraAnimMode::Idle,
-                    _ => CameraAnimMode::HalluFly,
-                };
-            }
-            if ui
-                .button(if light_control.enabled {
-                    "Lighting ON (toggle)"
-                } else {
-                    "Lighting OFF (toggle)"
-                })
-                .clicked()
-            {
-                light_control.enabled = !light_control.enabled;
-                if light_control.enabled {
-                    for mut pl in q_point.iter_mut() {
-                        pl.intensity = light_control.original_point * light_control.intensity_scale;
+                if ui.button("AutoRotate").clicked() { anim.t = 0.0; anim.mode = CameraAnimMode::AutoRotate; }
+                if ui.button(match anim.mode { CameraAnimMode::Idle => "Fly Through", _ => "Stop Fly" }).clicked() { anim.t = 0.0; anim.mode = match anim.mode { CameraAnimMode::Idle => CameraAnimMode::FlyThrough, _ => CameraAnimMode::Idle }; }
+                if ui.button(match anim.mode { CameraAnimMode::HalluFly => "Stop HalluFly", _ => "HalluFly" }).clicked() { anim.t = 0.0; anim.mode = match anim.mode { CameraAnimMode::HalluFly => CameraAnimMode::Idle, _ => CameraAnimMode::HalluFly }; }
+            });
+            ui.horizontal_wrapped(|ui| {
+                if ui.button(if light_control.enabled { "Lighting ON (toggle)" } else { "Lighting OFF (toggle)" }).clicked() {
+                    light_control.enabled = !light_control.enabled;
+                    if light_control.enabled {
+                        for mut pl in q_point.iter_mut() { pl.intensity = light_control.original_point * light_control.intensity_scale; }
+                        for mut sl in q_spot.iter_mut() { sl.intensity = light_control.original_spot * light_control.intensity_scale; }
+                        for mut dl in q_dir.iter_mut() { dl.illuminance = light_control.original_directional * light_control.intensity_scale; }
+                        ambient.brightness = light_control.original_ambient * light_control.intensity_scale; info!("Lighting toggled ON");
+                    } else {
+                        for mut pl in q_point.iter_mut() { pl.intensity = 0.0; }
+                        for mut sl in q_spot.iter_mut() { sl.intensity = 0.0; }
+                        for mut dl in q_dir.iter_mut() { dl.illuminance = 0.0; }
+                        ambient.brightness = 0.0; info!("Lighting toggled OFF");
                     }
-                    for mut sl in q_spot.iter_mut() {
-                        sl.intensity = light_control.original_spot * light_control.intensity_scale;
-                    }
-                    for mut dl in q_dir.iter_mut() {
-                        dl.illuminance =
-                            light_control.original_directional * light_control.intensity_scale;
-                    }
-                    ambient.brightness =
-                        light_control.original_ambient * light_control.intensity_scale;
-                    info!("Lighting toggled ON");
-                } else {
-                    for mut pl in q_point.iter_mut() {
-                        pl.intensity = 0.0;
-                    }
-                    for mut sl in q_spot.iter_mut() {
-                        sl.intensity = 0.0;
-                    }
-                    for mut dl in q_dir.iter_mut() {
-                        dl.illuminance = 0.0;
-                    }
-                    ambient.brightness = 0.0;
-                    info!("Lighting toggled OFF");
                 }
-            }
-            ui.add(
-                egui::Slider::new(&mut light_control.intensity_scale, 0.05..=3.0)
-                    .text("Light scale"),
-            );
-            if ui.button("Apply Scale").clicked() && light_control.enabled {
-                for mut pl in q_point.iter_mut() {
-                    pl.intensity = light_control.original_point * light_control.intensity_scale;
+                ui.add(egui::Slider::new(&mut light_control.intensity_scale, 0.05..=3.0).text("Light scale"));
+                if ui.button("Apply Scale").clicked() && light_control.enabled {
+                    for mut pl in q_point.iter_mut() { pl.intensity = light_control.original_point * light_control.intensity_scale; }
+                    for mut sl in q_spot.iter_mut() { sl.intensity = light_control.original_spot * light_control.intensity_scale; }
+                    for mut dl in q_dir.iter_mut() { dl.illuminance = light_control.original_directional * light_control.intensity_scale; }
+                    ambient.brightness = light_control.original_ambient * light_control.intensity_scale;
                 }
-                for mut sl in q_spot.iter_mut() {
-                    sl.intensity = light_control.original_spot * light_control.intensity_scale;
-                }
-                for mut dl in q_dir.iter_mut() {
-                    dl.illuminance =
-                        light_control.original_directional * light_control.intensity_scale;
-                }
-                ambient.brightness = light_control.original_ambient * light_control.intensity_scale;
-            }
-            let pt_sum: f32 = q_point.iter().map(|p| p.intensity).sum();
-            let sp_sum: f32 = q_spot.iter().map(|s| s.intensity).sum();
-            let dir_sum: f32 = q_dir.iter().map(|d| d.illuminance).sum();
-            ui.label(format!(
-                "Lights {} | Pt {:.0} Sp {:.0} Dir {:.0} Amb {:.2}",
-                if light_control.enabled { "ON" } else { "OFF" },
-                pt_sum,
-                sp_sum,
-                dir_sum,
-                ambient.brightness
-            ));
-            ui.label(format!("Grid: {}x{}x{}", sim_cfg.h, sim_cfg.w, sim_cfg.d));
+                ui.add(egui::Slider::new(&mut exposure.ev, -4.0..=4.0).text("Exposure EV"));
+                if ui.button("Tone Reinhard").clicked() { for mut t in q_cam_tone.iter_mut() { *t = Tonemapping::Reinhard; }}
+                let pt_sum: f32 = q_point.iter().map(|p| p.intensity).sum();
+                let sp_sum: f32 = q_spot.iter().map(|s| s.intensity).sum();
+                let dir_sum: f32 = q_dir.iter().map(|d| d.illuminance).sum();
+                ui.label(format!("Lights {} | Pt {:.0} Sp {:.0} Dir {:.0} Amb {:.2}", if light_control.enabled { "ON" } else { "OFF" }, pt_sum, sp_sum, dir_sum, ambient.brightness));
+            });
         });
     });
+
     egui::SidePanel::left("left_panel").show(ctx, |ui| {
         ui.heading("Time Series");
-        timed_plot_dual(
-            ui,
-            "Input/Output",
-            &sim.input_ring,
-            &sim.output_ring,
-            160.0,
-            vis.reverse_time_scroll,
-            vis.time_window,
-        );
+        timed_plot_dual(ui, "Input/Output", &sim.input_ring, &sim.output_ring, 160.0, vis.reverse_time_scroll, vis.time_window);
         ui.separator();
         ui.heading("Latent Energy (Approx)");
-        timed_plot_single(
-            ui,
-            "Energy (||x||)",
-            &sim.latent_energy_ring,
-            120.0,
-            egui::Color32::RED,
-            vis.reverse_time_scroll,
-            vis.time_window,
-            Some(sim.latent_energy_peak),
-            vis.energy_scale,
-        );
+        timed_plot_single(ui, "Energy (||x||)", &sim.latent_energy_ring, 120.0, egui::Color32::RED, vis.reverse_time_scroll, vis.time_window, Some(sim.latent_energy_peak), vis.energy_scale);
         ui.separator();
         ui.heading("Camera Depth");
-        timed_plot_single(
-            ui,
-            "Depth (cam dist)",
-            &sim.camera_depth_ring,
-            100.0,
-            egui::Color32::LIGHT_GREEN,
-            vis.reverse_time_scroll,
-            vis.time_window,
-            None,
-            1.0,
-        );
+        timed_plot_single(ui, "Depth (cam dist)", &sim.camera_depth_ring, 100.0, egui::Color32::LIGHT_GREEN, vis.reverse_time_scroll, vis.time_window, None, 1.0);
+        if vis.show_volume_stats {
+            ui.separator();
+            ui.heading("Volume Mean / Var");
+            timed_plot_dual(ui, "Mean/Var", &sim.volume_mean_ring, &sim.volume_var_ring, 120.0, vis.reverse_time_scroll, vis.time_window);
+        }
+        if vis.show_energy_derivative {
+            ui.separator();
+            ui.heading("Latent Energy Derivative");
+            timed_plot_single(ui, "dEnergy", &sim.latent_energy_deriv_ring, 100.0, egui::Color32::from_rgb(180,140,255), vis.reverse_time_scroll, vis.time_window, None, 1.0);
+        }
     });
+
     egui::SidePanel::right("right_panel").show(ctx, |ui| {
         ui.heading("3D Controls");
-        ui.label("Camera orbit & colormap: TODO");
-        ui.separator();
         ui.label("Visualization Toggles:");
         ui.checkbox(&mut vis.depth_scale_attenuation, "Depth size attenuation");
-        ui.checkbox(&mut vis.reverse_time_scroll, "Time scroll RTL");
+        ui.checkbox(&mut vis.reverse_time_scroll, "Time scroll RTL (legacy flag)");
         ui.add(egui::Slider::new(&mut vis.time_window, 100..=4096).text("Time window"));
         ui.checkbox(&mut vis.show_center_axes, "Center axes");
         ui.checkbox(&mut vis.show_corner_axes, "Corner axes");
-        ui.collapsing("Internal Grid", |ui| {
-            ui.checkbox(&mut vis.show_internal_grid, "Show lattice");
-            ui.add(egui::Slider::new(&mut vis.internal_grid_opacity, 0.01..=0.4).text("Opacity"));
-            ui.add(egui::Slider::new(&mut vis.internal_grid_stride, 1..=6).text("Stride"));
-            ui.small("Stride hides lines where either index not divisible. Helps declutter.");
-        });
-        ui.collapsing("Sphere Scale", |ui| {
-            ui.add(egui::Slider::new(&mut vis.base_scale, 0.01..=0.3).text("Base"));
-            ui.add(egui::Slider::new(&mut vis.scale_factor, 0.1..=2.0).text("Factor"));
-            ui.add(egui::Slider::new(&mut vis.max_scale, 0.2..=3.0).text("Max"));
-            ui.add(egui::Slider::new(&mut vis.spike_value, 1.0..=50.0).text("Spike"));
-        });
+        ui.checkbox(&mut vis.show_internal_grid, "Internal voxel grid");
+        ui.add(egui::Slider::new(&mut vis.internal_grid_opacity, 0.0..=1.0).text("Grid opacity"));
+        ui.add(egui::Slider::new(&mut vis.internal_grid_stride, 1..=8).text("Grid stride"));
+        ui.add(egui::Slider::new(&mut vis.energy_scale, 0.1..=10.0).logarithmic(true).text("Energy scale"));
         ui.separator();
-        ui.heading("Tonemapping & Exposure");
-        // Tonemapping combo
-        if let Ok(mut tone) = q_cam_tone.get_single_mut() {
-            let current = *tone;
-            egui::ComboBox::from_label("Tonemapper")
-                .selected_text(format!("{:?}", current))
-                .show_ui(ui, |cb| {
-                    for variant in [
-                        Tonemapping::AcesFitted,
-                        Tonemapping::AgX,
-                        Tonemapping::Reinhard,
-                        Tonemapping::BlenderFilmic,
-                        Tonemapping::TonyMcMapface,
-                        Tonemapping::SomewhatBoringDisplayTransform,
-                    ] {
-                        cb.selectable_value(&mut *tone, variant, format!("{:?}", variant));
-                    }
-                });
-        }
-        let mut ev_changed = false;
-        let old_ev = exposure.ev;
-        ui.add(egui::Slider::new(&mut exposure.ev, -8.0..=8.0).text("Exposure EV"));
-        if (exposure.ev - old_ev).abs() > 1e-4 {
-            exposure.pending_apply = true;
-            ev_changed = true;
-        }
-        if ev_changed {
-            ui.colored_label(egui::Color32::LIGHT_GREEN, "EV updated");
-        }
-        ui.small("Non-destructive: original light intensities preserved.");
-        ui.heading("FFT / Spectrum");
-        if ui.button("FFT 256").clicked() {
-            compute_fft_window(&mut sim, 256);
-        }
-        if ui.button("FFT 512").clicked() {
-            compute_fft_window(&mut sim, 512);
-        }
-        spectrum_plot(ui, &sim.spectrum_cache, 140.0);
-        ui.separator();
-        ui.heading("Phase Portrait");
+        ui.label("Sphere Size Scaling:");
+        ui.add(egui::Slider::new(&mut vis.base_scale, 0.005..=0.5).text("Base"));
+        ui.add(egui::Slider::new(&mut vis.scale_factor, 0.05..=2.0).text("Gain"));
+        ui.add(egui::Slider::new(&mut vis.max_scale, 0.1..=4.0).text("Max"));
+        ui.add(egui::Slider::new(&mut vis.spike_value, 1.0..=100.0).logarithmic(true).text("Spike val"));
         ui.horizontal(|ui| {
-            ui.label("i");
-            ui.add(egui::DragValue::new(&mut sim.latent_pair.0).clamp_range(0..=63));
-            ui.label("j");
-            ui.add(egui::DragValue::new(&mut sim.latent_pair.1).clamp_range(0..=63));
-        });
-        phase_plot(ui, &sim.phase_points, 180.0);
-    });
-    egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
-        ui.label("Phase Portrait & Diagnostics (future pane)");
-    });
-
-    // Orientation gizmo (bottom-left overlay) - simple RGB axis triad projected
-    egui::Area::new("orientation_gizmo")
-        .movable(false)
-        .interactable(false)
-        .fixed_pos([8.0, ctx.available_rect().bottom() - 96.0])
-        .show(ctx, |ui| {
-            let size = egui::vec2(80.0, 80.0);
-            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-            let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, 6.0, egui::Color32::from_black_alpha(32));
-            // Use camera orientation if available later; for now assume identity axes
-            let center = rect.center();
-            let scale = 28.0;
-            let draw_axis =
-                |dir: Vec3, col: egui::Color32, label: &str, painter: &egui::Painter| {
-                    let p = center + egui::Vec2::new(dir.x, -dir.y) * scale;
-                    painter.line_segment([center, p], egui::Stroke::new(2.0, col));
-                    painter.text(
-                        p,
-                        egui::Align2::CENTER_CENTER,
-                        label,
-                        egui::FontId::proportional(10.0),
-                        col,
-                    );
-                };
-            draw_axis(Vec3::X, egui::Color32::RED, "X", &painter);
-            draw_axis(Vec3::Y, egui::Color32::GREEN, "Y", &painter);
-            draw_axis(Vec3::Z, egui::Color32::BLUE, "Z", &painter);
-        });
-}
-
-// Frame capture placeholder
-fn capture_system(mut sim_cfg: ResMut<SimConfig>, sim: Res<DLinOssSim>) {
-    if !sim_cfg.capture {
-        return;
-    }
-    // Enforce per-session limit (~5s) with auto-stop
-    if let Some(start) = sim_cfg.capture_start_frame {
-        let elapsed = sim_cfg.frame_counter.saturating_sub(start);
-        if elapsed >= sim_cfg.max_capture_frames {
-            sim_cfg.capture = false;
-            info!(
-                "Capture auto-stopped after {} frames (prefix={})",
-                elapsed, sim_cfg.capture_prefix
-            );
-            return;
-        }
-    }
-    let dir = "images_store/SHOWCASE";
-    let _ = fs::create_dir_all(dir);
-    // Simple 2D projection of current volume onto an image (XZ slice stacking Y rows)
-    let (h, w, d) = (sim_cfg.h, sim_cfg.w, sim_cfg.d);
-    let slice_h = d as u32; // one pixel per depth
-    let img_h = h as u32 * slice_h;
-    let img_w = w as u32;
-    let mut imgbuf: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::new(img_w, img_h);
-    for y in 0..h {
-        for x in 0..w {
-            for z in 0..d {
-                let idx = z * h * w + y * w + x;
-                if let Some(val) = sim.last_volume.get(idx) {
-                    let norm = (val.abs() * 4.0).min(1.0);
-                    let r = (norm * 255.0) as u8;
-                    let g = ((1.0 - norm) * 64.0) as u8;
-                    let b = ((norm * norm) * 255.0) as u8;
-                    let py = y as u32 * slice_h + z as u32;
-                    imgbuf.put_pixel(x as u32, py, Rgba([r, g, b, 255]));
-                }
+            ui.label("Wave Mode:");
+            if ui.button(match vis.wave_mode { WaveMode::Normal => "Normal", WaveMode::ComplexWave => "Complex Wave" }).clicked() {
+                vis.wave_mode = match vis.wave_mode { WaveMode::Normal => WaveMode::ComplexWave, WaveMode::ComplexWave => WaveMode::Normal };
             }
-        }
-    }
-    let path = if let Some(start) = sim_cfg.capture_start_frame {
-        let rel = sim_cfg.frame_counter.saturating_sub(start);
-        format!(
-            "{}/{}_frame_{:05}.png",
-            dir, sim_cfg.capture_prefix, rel
-        )
-    } else {
-        format!(
-            "{}/{}_frame_{:05}.png",
-            dir, sim_cfg.capture_prefix, sim_cfg.frame_counter
-        )
-    };
-    if let Ok(f) = File::create(&path) {
-        let mut w = BufWriter::new(f);
-        #[allow(deprecated)]
-        {
-            let encoder = image::codecs::png::PngEncoder::new(&mut w);
-            let _ = encoder.encode(&imgbuf, img_w, img_h, image::ColorType::Rgba8);
-        }
-    }
-}
-
-fn frame_counter(mut sim_cfg: ResMut<SimConfig>) {
-    sim_cfg.frame_counter += 1;
-}
-fn compute_fft_window(sim: &mut DLinOssSim, size: usize) {
-    if sim.output_ring.len() < size {
-        return;
-    }
-    let slice = sim.output_ring.view_last(size);
-    if slice.len() != size { return; }
-    let tmp: Vec<f32> = slice.iter().map(|s| s.value).collect();
-    #[cfg(feature = "fft")]
-    {
-        if !fill_spectrum_candle(sim, &tmp) {
-            fill_spectrum_from_naive(sim, &tmp);
-        }
-    }
-    #[cfg(not(feature = "fft"))]
-    {
-        fill_spectrum_from_naive(sim, &tmp);
-    }
-}
-fn fill_spectrum_from_naive(sim: &mut DLinOssSim, window: &[f32]) {
-    let spec = support_fft_naive(window);
-    sim.spectrum_cache.clear();
-    for p in spec.into_iter().take(512) {
-        sim.spectrum_cache.push(p);
-    }
-}
-#[cfg(feature = "fft")]
-fn fill_spectrum_candle(sim: &mut DLinOssSim, window: &[f32]) -> bool {
-    use candlekos::DType;
-    // Create tensor and run rfft (normalized) then compute magnitude of complex interleaved output
-    let dev = &sim.device;
-    let t = match Tensor::from_slice(window, (window.len(),), dev) {
-        Ok(t) => t,
-        Err(_) => return false,
-    };
-    let len = window.len();
-    let fft = match t.rfft(0usize, true) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-    // rfft output shape should be [len/2 + 1, 2] (real, imag)
-    let dims = fft.dims();
-    if dims.len() != 2 || dims[1] != 2 {
-        return false;
-    }
-    let rows = dims[0];
-    let data = match fft.to_vec2::<f32>() {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    sim.spectrum_cache.clear();
-    // Skip last Nyquist bin for consistency with naive half-size; cap to 512
-    for k in 0..rows.min(512) {
-        let re = data[k][0];
-        let im = data[k][1];
-        let mag = (re * re + im * im).sqrt() / (len as f32);
-        sim.spectrum_cache.push([k as f32, mag]);
-    }
-    true
+        });
+        ui.separator();
+        ui.collapsing("Advanced Scale & Metrics", |ui| {
+            ui.checkbox(&mut vis.show_volume_stats, "Show volume mean/var");
+            ui.checkbox(&mut vis.show_energy_derivative, "Show energy derivative");
+            ui.label("(Size sliders duplicated above for quick access)");
+        });
+    });
 }
 
 fn spectrum_plot(ui: &mut egui::Ui, pts: &[[f32; 2]], height: f32) {
@@ -1620,7 +1308,8 @@ fn timed_plot_dual(
                 // pad left (or right) with blank until filled
                 (samp.idx as f32) / (domain_span.max(1) as f32)
             };
-            let x = if reverse { 1.0 - rel } else { rel };
+            // Always scroll left-to-right after initial blank phase
+            let x = rel;
             let norm = (samp.value - min_v) / (max_v - min_v);
             let pos = egui::pos2(rect.left() + x * rect.width(), rect.bottom() - norm * rect.height());
             pts.push(pos);
@@ -1672,7 +1361,8 @@ fn timed_plot_single(
         } else {
             (samp.idx as f32) / (domain_span.max(1) as f32)
         };
-        let x = if reverse { 1.0 - rel } else { rel };
+    // Always scroll left-to-right after initial blank phase
+    let x = rel;
         let v = samp.value * scale;
         let norm = (v - min_v) / (max_v - min_v);
         let pos = egui::pos2(rect.left() + x * rect.width(), rect.bottom() - norm * rect.height());
@@ -1687,6 +1377,10 @@ fn timed_plot_single(
     }
 }
 
+
+fn frame_counter(mut sim_cfg: ResMut<SimConfig>) { sim_cfg.frame_counter = sim_cfg.frame_counter.wrapping_add(1); }
+
+fn capture_system(mut _sim_cfg: ResMut<SimConfig>) { /* stub: implement frame capture later */ }
 
 pub fn main() -> Result<()> {
     // Initialize deterministic layer
@@ -1722,6 +1416,10 @@ pub fn main() -> Result<()> {
         spectrum_cache: Vec::with_capacity(1024),
         latent_energy_peak: 1e-6,
         camera_depth_ring: TimedRing::new(ring_capacity),
+    volume_mean_ring: TimedRing::new(ring_capacity),
+    volume_var_ring: TimedRing::new(ring_capacity),
+    latent_energy_deriv_ring: TimedRing::new(ring_capacity),
+    last_latent_energy: 0.0,
     };
     // Generate session prefix (UTC seconds) for capture naming
     let ts = std::time::SystemTime::now()
