@@ -6,6 +6,7 @@ members = [
 	"crates/dlinoss-display", 
 	"crates/dlinoss-helpers",
 	"crates/dlinoss-mcp",
+	"00DLinossrustPLAYGROUND/PGcrates/dlinoss-lighting-lab",
 	"notebooks",  # dlinoss-notebooks glue crate
 	"notebooks/jupytext-experiment-subcrate",
 	"xtask",

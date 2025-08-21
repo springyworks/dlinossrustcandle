@@ -11,9 +11,10 @@ candle-nn = { path = "/home/rustuser/projects/rust/from_github/candle/candle-nn"
 # For optional 3D / UI; initial egui 2D + placeholder for future bevy feature
 eframe = { version = "0.28", default-features = false, features = ["glow"] }
 egui = "0.28"
-bevy = { version = "0.13", default-features = false, features = ["bevy_winit", "x11", "bevy_render", "bevy_core_pipeline", "bevy_pbr"] }
+bevy = { version = "0.13", default-features = false, features = ["bevy_winit", "x11", "bevy_render", "bevy_core_pipeline", "bevy_pbr", "tonemapping_luts"] }
 bevy_egui = "0.26"
 image = { version = "0.24", default-features = false, features = ["png"] }
+rand = { version = "0.8", features = ["std", "small_rng"] }
 
 [features]
 default = []

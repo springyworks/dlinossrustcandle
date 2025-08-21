@@ -1,19 +1,104 @@
-//! D-LinOSS Playground 3D + egui integration (phase 1 scaffold).
-//! Features:
-//! - Bevy 3D scene with instanced spheres representing a 3D slice of a 4D tensor.
-//! - egui 4-pane dashboard (time series, latent energy, FFT placeholder, 3D controls).
-//! - Deterministic D-LinOSS forward simulation updating a synthetic volume.
-//! - Frame capture toggle (writes PNG frames under images_store/showcase/).
-//!
-//! Next phases (not yet implemented):
-//! - True FFT live spectrum (reuse candle FFT when feature enabled)
-//! - Phase portrait & latent component selection
-//! - Headless export batch mode
-//! - Colormap editor & auto scaling
+use bevy::input::mouse::MouseButton;
+use bevy::core_pipeline::tonemapping::Tonemapping; // added for tonemapper enum usage
+// Camera orbit/zoom controller (turntable pattern)
+#[derive(Resource)]
+struct CameraOrbitController {
+    pub yaw: f32,
+    pub pitch: f32,
+    pub radius: f32,
+    pub target: Vec3,
+    #[allow(dead_code)]
+    pub dragging: bool,
+    #[allow(dead_code)]
+    pub last_mouse_pos: Vec2,
+}
+
+impl Default for CameraOrbitController {
+    fn default() -> Self {
+        Self {
+            yaw: 0.0,
+            pitch: 0.0,
+            radius: 14.0,
+            target: Vec3::ZERO,
+            dragging: false,
+            last_mouse_pos: Vec2::ZERO,
+        }
+    }
+}
+
+fn camera_orbit_system(
+    mut controller: ResMut<CameraOrbitController>,
+    mut query: Query<&mut Transform, With<Camera3d>>,
+    buttons: Res<bevy::input::ButtonInput<bevy::input::mouse::MouseButton>>,
+    mut mouse_motion: EventReader<bevy::input::mouse::MouseMotion>,
+    mut scroll: EventReader<bevy::input::mouse::MouseWheel>,
+    anim: Option<Res<CameraAnimState>>,
+    mut egui_ctxs: EguiContexts,
+) {
+    if let Some(anim) = anim {
+        if anim.mode != CameraAnimMode::Idle {
+            return;
+        }
+    }
+    let egui_ctx = egui_ctxs.ctx_mut();
+    if egui_ctx.is_pointer_over_area() || egui_ctx.wants_pointer_input() {
+        return;
+    }
+    for ev in scroll.read() {
+        controller.radius -= ev.y * 1.2;
+        controller.radius = controller.radius.clamp(3.0, 80.0);
+    }
+    // Dynamic minimum pitch so camera never drops below ground plane (y = GROUND_Y)
+    const GROUND_Y: f32 = -8.0; // must match plane spawn
+    let ground_clearance = 0.3; // keep camera this much above plane
+    let min_pitch_from_ground = ((GROUND_Y + ground_clearance) / controller.radius)
+        .clamp(-0.99, 0.99)
+        .asin();
+    // Hard safety clamp (do not let camera flip upside-down)
+    let min_pitch = min_pitch_from_ground.max(-0.65); // ~ -37 deg
+    let max_pitch = 1.35; // slightly less than previous to avoid grazing top singularity
+    let mut delta = Vec2::ZERO;
+    if buttons.pressed(MouseButton::Left) {
+        for ev in mouse_motion.read() {
+            delta += ev.delta;
+        }
+        if delta.length_squared() > 0.0 {
+            controller.yaw -= delta.x * 0.012;
+            controller.pitch -= delta.y * 0.012;
+            controller.pitch = controller.pitch.clamp(min_pitch, max_pitch);
+        }
+    }
+    let yaw = controller.yaw;
+    let pitch = controller.pitch;
+    let r = controller.radius;
+    let target = controller.target;
+    let x = r * yaw.cos() * pitch.cos();
+    let y = r * pitch.sin();
+    let z = r * yaw.sin() * pitch.cos();
+    let pos = target + Vec3::new(x, y, z);
+    for mut tf in query.iter_mut() {
+        tf.translation = pos;
+        tf.look_at(target, Vec3::Y);
+    }
+}
+// D-LinOSS Playground 3D + egui integration (phase 1 scaffold).
+// Features:
+// - Bevy 3D scene with instanced spheres representing a 3D slice of a 4D tensor.
+// - egui 4-pane dashboard (time series, latent energy, FFT placeholder, 3D controls).
+// - Deterministic D-LinOSS forward simulation updating a synthetic volume.
+// - Frame capture toggle (writes PNG frames under images_store/showcase/).
+//
+// Next phases (not yet implemented):
+// - True FFT live spectrum (reuse candle FFT when feature enabled)
+// - Phase portrait & latent component selection
+// - Headless export batch mode
+// - Colormap editor & auto scaling
 
 use anyhow::Result;
 use bevy::prelude::*;
+use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::PrimitiveTopology;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy_egui::{EguiContexts, EguiPlugin, egui};
 use candlekos::{DType, Device, Tensor};
 use dlinossrustcandle::{DLinOssLayer, DLinOssLayerConfig};
@@ -39,6 +124,9 @@ struct SimConfig {
     paused: bool,
     capture: bool,
     frame_counter: u64,
+    capture_start_frame: Option<u64>, // frame index when capture enabled
+    max_capture_frames: u64,          // limit to avoid file explosion
+    capture_prefix: String,           // session unique prefix for movie assembly
 }
 
 #[derive(Resource)]
@@ -58,6 +146,7 @@ struct DLinOssSim {
     latent_pair: (usize, usize),
     state_snapshot: Option<Tensor>, // last w_seq (small window)
     spectrum_cache: Vec<[f32; 2]>,
+    latent_energy_peak: f32, // running max for stable plotting scale
 }
 
 #[derive(Component)]
@@ -65,38 +154,329 @@ struct VoxelSphere {
     idx: usize,
 }
 
+// Visualization configuration / ergonomics toggles
+#[derive(Resource)]
+struct VisualizationConfig {
+    // If true, apply an extra scale attenuation with distance from camera to enhance depth perception
+    depth_scale_attenuation: bool,
+    // If true, time-series plots scroll right->left (newest data on the right), else left->right
+    reverse_time_scroll: bool,
+    // Length of visible time window in samples for plots
+    time_window: usize,
+    // Show origin-centered axes
+    show_center_axes: bool,
+    // Show corner (edge) axes instead (future multi-matrix support)
+    show_corner_axes: bool,
+    // Sphere sizing controls
+    base_scale: f32,
+    scale_factor: f32,
+    max_scale: f32,
+    spike_value: f32,
+}
+
+// Camera / scene animation modes
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum CameraAnimMode {
+    #[default]
+    Idle,
+    FlyThrough, // in-out dive and retreat loop
+    HalluFly,   // hallucinating variant with enhanced voxel choreography
+}
+
+#[derive(Resource, Debug)]
+struct CameraAnimState {
+    mode: CameraAnimMode,
+    t: f32,
+    duration: f32,
+    // Stored base transform for return or blending
+    #[allow(dead_code)]
+    base_transform: Transform,
+    loop_index: u64,
+    // Path phase durations (approach -> pause -> retreat)
+    approach: f32,
+    pause: f32,
+    retreat: f32,
+    // Cached derived totals (updated if durations change)
+    total: f32,
+}
+
+impl Default for CameraAnimState {
+    fn default() -> Self {
+        Self {
+            mode: CameraAnimMode::Idle,
+            t: 0.0,
+            duration: 16.0, // legacy field kept (unused externally) - prefer total
+            base_transform: Transform::from_xyz(-4.0, 6.0, 14.0).looking_at(Vec3::ZERO, Vec3::Y),
+            loop_index: 0,
+            approach: 6.0,
+            pause: 4.0, // requested steady 4s pause
+            retreat: 6.0,
+            total: 6.0 + 4.0 + 6.0,
+        }
+    }
+}
+
+// Fly Through & HalluFly docs:
+// - Fly Through: cinematic path that starts far (z ~ 42), dives toward/through the voxel cube, tightens
+//   orbit radius inside, then retreats, looping seamlessly. Subtle spin near closest approach for depth cue.
+// - HalluFly: same spatial path but with aggressive multi-axis spin while "inside" plus an altered voxel field:
+//   spheres receive an added swirl * breathe modulation (coordinated radial + angular wave) producing a
+//   hallucinatory pulsation synchronized with camera motion. Toggle via top-bar buttons.
+// Implementation details:
+//   camera_anim_system drives transform using time-normalized phase with sinusoidal easing to avoid jerk.
+//   sim_step checks for HalluFly to blend extra volumetric patterning (swirl+breathe) into last_volume.
+//   camera_orbit_system is disabled while an animation mode is active so manual input doesn't fight it.
+// Future tuning ideas:
+//   * Parameter sliders for duration, near/far depth, spin intensity.
+//   * Path variants (figure-eight, helical ascent, spline-defined waypoints).
+//   * Per-voxel color modulation keyed off swirl phase for psychedelic palettes.
+// 2025-08 additions:
+//   * Random per-loop jitter (SmallRng) blended stronger near interior for organic flight feel.
+//   * Three extended pause windows (centers 0.33 / 0.50 / 0.67 of loop) each 3x previous length for showcase.
+//     A smooth pause factor (0..1) derived from proximity to centers modulates spin & highlight intensity.
+//   * Highlight cluster: sparse index selection scaled up while paused to draw attention.
+//   * Opal glass material: translucent whitish spheres with soft emissive tint for better light play.
+//   * Light toggle: UI button zeroes / restores intensities for point & spot lights.
+
+fn camera_anim_system(
+    time: Res<Time>,
+    mut q_cam: Query<&mut Transform, (With<Camera3d>, Without<VoxelSphere>)>,
+    mut state: ResMut<CameraAnimState>,
+) {
+    if state.mode == CameraAnimMode::Idle {
+        return;
+    }
+    let dt = time.delta_seconds();
+    state.t += dt;
+    let total = state.total;
+    if state.t >= total {
+        state.t -= total; // loop smoothly
+        state.loop_index += 1;
+    }
+    let t = state.t;
+    let (approach, pause, retreat) = (state.approach, state.pause, state.retreat);
+    let mut phase_kind = "approach";
+    let near_pos = Vec3::new(8.0, 4.0, 8.0);
+    let far_pos = Vec3::new(-6.0, 7.0, 44.0);
+    // Helper smoothstep easing
+    let smooth = |x: f32| (x * x * (3.0 - 2.0 * x)).clamp(0.0, 1.0);
+    let mut pos;
+    if t < approach {
+        let p = smooth(t / approach);
+        pos = far_pos.lerp(near_pos, p);
+    } else if t < approach + pause {
+        phase_kind = "pause";
+        pos = near_pos;
+    } else {
+        phase_kind = "retreat";
+        let tr = t - approach - pause;
+        let q = smooth(tr / retreat);
+        pos = near_pos.lerp(far_pos, q);
+    }
+    if let Ok(mut tf) = q_cam.get_single_mut() {
+        *tf = Transform::from_translation(pos).looking_at(Vec3::ZERO, Vec3::Y);
+        // Gentle, subtle sway only in HalluFly (still toned down)
+        if matches!(state.mode, CameraAnimMode::HalluFly) {
+            let sway = (t * 0.4).sin() * 0.15;
+            tf.rotate_local_y(sway);
+            if phase_kind == "pause" {
+                tf.rotate_local_x((t * 0.25).sin() * 0.05);
+            }
+        }
+    }
+}
+
+impl Default for VisualizationConfig {
+    fn default() -> Self {
+        Self {
+            depth_scale_attenuation: true,
+            reverse_time_scroll: true,
+            time_window: 600,
+            show_center_axes: false,
+            show_corner_axes: true,
+            base_scale: 0.08,
+            scale_factor: 0.55,
+            max_scale: 1.2,
+            spike_value: 12.0,
+        }
+    }
+}
+
+// Axis marker kinds for visibility toggling
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+enum AxisKind {
+    Center,
+    Corner,
+}
+
+#[derive(Component)]
+struct AxisMarker(pub AxisKind);
+
+#[derive(Component)]
+struct SceneLight;
+
+#[derive(Resource, Default)]
+struct LightControl {
+    enabled: bool,
+    // store original intensities so toggling restores them
+    original_point: f32,
+    original_spot: f32,
+    original_directional: f32,
+    original_ambient: f32,
+    intensity_scale: f32,
+}
+
+fn axis_visibility_system(
+    vis: Res<VisualizationConfig>,
+    mut q: Query<(&AxisMarker, &mut Visibility)>,
+) {
+    if !vis.is_changed() {
+        return;
+    }
+    for (marker, mut v) in q.iter_mut() {
+        let show = match marker.0 {
+            AxisKind::Center => vis.show_center_axes,
+            AxisKind::Corner => vis.show_corner_axes,
+        };
+        *v = if show {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+fn exposure_apply_system(
+    exposure: Res<ExposureSettings>,
+    light_control: Res<LightControl>,
+    mut q_point: Query<&mut PointLight>,
+    mut q_spot: Query<&mut SpotLight>,
+    mut q_dir: Query<&mut DirectionalLight>,
+    mut ambient: ResMut<AmbientLight>,
+) {
+    if !exposure.is_changed() && !light_control.is_changed() {
+        return;
+    }
+    if !light_control.enabled {
+        return;
+    }
+    let mult = 2f32.powf(exposure.ev) * light_control.intensity_scale;
+    for mut pl in q_point.iter_mut() {
+        pl.intensity = light_control.original_point * mult;
+    }
+    for mut sl in q_spot.iter_mut() {
+        sl.intensity = light_control.original_spot * mult;
+    }
+    for mut dl in q_dir.iter_mut() {
+        dl.illuminance = light_control.original_directional * mult;
+    }
+    ambient.brightness = light_control.original_ambient * mult;
+}
+
 // Camera
+#[derive(Resource, Debug)]
+struct ExposureSettings {
+    ev: f32,             // exposure value in EV (stops)
+    pending_apply: bool, // flag to reapply lights after change
+}
+
+impl Default for ExposureSettings {
+    fn default() -> Self {
+        Self {
+            ev: 0.0,
+            pending_apply: true,
+        }
+    }
+}
+
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     sim_cfg: Res<SimConfig>,
 ) {
     // Camera
-    commands.spawn(Camera3dBundle {
-        transform: Transform::from_xyz(-4.0, 6.0, 14.0).looking_at(Vec3::ZERO, Vec3::Y),
+    let cam_start = Transform::from_xyz(-4.0, 6.0, 14.0).looking_at(Vec3::ZERO, Vec3::Y);
+    // Camera with initial tonemapping (ACES as neutral cinematic baseline) - avoid duplicate component in bundle
+    let cam_id = commands.spawn(Camera3dBundle { transform: cam_start, ..default() }).id();
+    commands.entity(cam_id).insert(Tonemapping::AcesFitted);
+    // Insert camera animation state resource (after camera spawn)
+    commands.insert_resource(CameraAnimState {
+        base_transform: cam_start,
         ..default()
     });
-    commands.spawn(PointLightBundle {
-        point_light: PointLight {
-            intensity: 10_000.0,
-            range: 100.0,
-            shadows_enabled: true,
+    commands.spawn((
+        PointLightBundle {
+            point_light: PointLight {
+                intensity: 7000.0,
+                range: 80.0,
+                shadows_enabled: true,
+                ..default()
+            },
+            transform: Transform::from_xyz(8.0, 12.0, 8.0),
             ..default()
         },
-        transform: Transform::from_xyz(8.0, 12.0, 8.0),
-        ..default()
+        SceneLight,
+    ));
+
+    // Add a soft spotlight sweeping from above-front to emphasize form
+    commands.spawn((
+        SpotLightBundle {
+            spot_light: SpotLight {
+                intensity: 18000.0,
+                color: Color::rgba(1.0, 0.95, 0.9, 1.0),
+                outer_angle: 50_f32.to_radians(),
+                inner_angle: 20_f32.to_radians(),
+                range: 120.0,
+                shadows_enabled: true,
+                ..default()
+            },
+            transform: Transform::from_xyz(-14.0, 18.0, 6.0)
+                .looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y),
+            ..default()
+        },
+        SceneLight,
+    ));
+
+    // Initialize light control resource with original intensities
+    commands.insert_resource(LightControl {
+        enabled: true,
+        original_point: 7000.0,
+        original_spot: 18000.0,
+        original_directional: 25000.0,
+        original_ambient: 0.35,
+        intensity_scale: 1.0,
     });
+    commands.insert_resource(ExposureSettings::default());
 
     // Base sphere mesh reused (scaled per instance)
     let sphere = Mesh::from(Sphere { radius: 0.5 });
     let sphere_handle = meshes.add(sphere);
+    // Opaque metallic spheres for clearer lighting response
     let base_mat = materials.add(StandardMaterial {
-        base_color: Color::rgba_linear(0.8, 0.2, 0.2, 0.6),
+        base_color: Color::rgb_linear(0.70, 0.72, 0.75),
+        metallic: 0.95,
+        perceptual_roughness: 0.18,
+        reflectance: 0.5,
+        emissive: Color::BLACK,
         unlit: false,
-        alpha_mode: bevy::prelude::AlphaMode::Blend,
         ..default()
     });
+
+    // Add a directional light to create stronger specular highlights across spheres
+    commands.spawn((
+        DirectionalLightBundle {
+            directional_light: DirectionalLight {
+                illuminance: 25_000.0,
+                shadows_enabled: true,
+                ..default()
+            },
+            transform: Transform::from_xyz(-12.0, 24.0, 14.0).looking_at(Vec3::ZERO, Vec3::Y),
+            ..default()
+        },
+        SceneLight,
+    ));
 
     let (h, w, d) = (sim_cfg.h, sim_cfg.w, sim_cfg.d);
     for z in 0..d {
@@ -119,6 +499,171 @@ fn setup(
         }
     }
 
+    // Axes (X=Red, Y=Green, Z=Blue) and bounding box wireframe to reduce spatial disorientation
+    let axis_radius = 0.02;
+    let axis_len = (h.max(w).max(d) as f32) * 0.6 + 2.0;
+    let axis_mesh = Mesh::from(Capsule3d {
+        radius: axis_radius,
+        half_length: axis_len * 0.5,
+        ..default()
+    });
+    // X axis
+    commands.spawn((
+        PbrBundle {
+            mesh: meshes.add(axis_mesh.clone()),
+            material: materials.add(StandardMaterial {
+                base_color: Color::rgba(1.0, 0.1, 0.1, 1.0),
+                unlit: true,
+                ..default()
+            }),
+            transform: Transform::from_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2))
+                .with_translation(Vec3::X * axis_len * 0.5),
+            ..default()
+        },
+        AxisMarker(AxisKind::Center),
+    ));
+    // Y axis
+    commands.spawn((
+        PbrBundle {
+            mesh: meshes.add(axis_mesh.clone()),
+            material: materials.add(StandardMaterial {
+                base_color: Color::rgba(0.1, 1.0, 0.1, 1.0),
+                unlit: true,
+                ..default()
+            }),
+            transform: Transform::from_translation(Vec3::Y * axis_len * 0.5),
+            ..default()
+        },
+        AxisMarker(AxisKind::Center),
+    ));
+    // Z axis
+    commands.spawn((
+        PbrBundle {
+            mesh: meshes.add(axis_mesh.clone()),
+            material: materials.add(StandardMaterial {
+                base_color: Color::rgba(0.1, 0.4, 1.0, 1.0),
+                unlit: true,
+                ..default()
+            }),
+            transform: Transform::from_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
+                .with_translation(Vec3::Z * axis_len * 0.5),
+            ..default()
+        },
+        AxisMarker(AxisKind::Center),
+    ));
+
+    // Bounding box wireframe: spawn thin boxes along edges
+    let bx = w as f32 * 0.5;
+    let by = h as f32 * 0.5;
+    let bz = d as f32 * 0.5;
+    // Corner axes (from minimum corner) for alternative reference
+    let corner_origin = Vec3::new(-bx, -by, -bz);
+    let corner_len = axis_len;
+    let axis_mesh_corner = Mesh::from(Capsule3d {
+        radius: axis_radius,
+        half_length: corner_len * 0.5,
+        ..default()
+    });
+    // X from corner
+    commands.spawn((
+        PbrBundle {
+            mesh: meshes.add(axis_mesh_corner.clone()),
+            material: materials.add(StandardMaterial {
+                base_color: Color::rgba(1.0, 0.4, 0.4, 0.8),
+                unlit: true,
+                ..default()
+            }),
+            transform: Transform::from_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2))
+                .with_translation(corner_origin + Vec3::X * corner_len * 0.5),
+            ..default()
+        },
+        AxisMarker(AxisKind::Corner),
+    ));
+    // Y
+    commands.spawn((
+        PbrBundle {
+            mesh: meshes.add(axis_mesh_corner.clone()),
+            material: materials.add(StandardMaterial {
+                base_color: Color::rgba(0.4, 1.0, 0.4, 0.8),
+                unlit: true,
+                ..default()
+            }),
+            transform: Transform::from_translation(corner_origin + Vec3::Y * corner_len * 0.5),
+            ..default()
+        },
+        AxisMarker(AxisKind::Corner),
+    ));
+    // Z
+    commands.spawn((
+        PbrBundle {
+            mesh: meshes.add(axis_mesh_corner.clone()),
+            material: materials.add(StandardMaterial {
+                base_color: Color::rgba(0.4, 0.6, 1.0, 0.8),
+                unlit: true,
+                ..default()
+            }),
+            transform: Transform::from_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
+                .with_translation(corner_origin + Vec3::Z * corner_len * 0.5),
+            ..default()
+        },
+        AxisMarker(AxisKind::Corner),
+    ));
+    let edge_radius = 0.01;
+    let edge_mesh = Mesh::from(Capsule3d {
+        radius: edge_radius,
+        half_length: 0.5,
+        ..default()
+    });
+    let edge_mat = materials.add(StandardMaterial {
+        base_color: Color::rgba(0.8, 0.8, 0.9, 0.4),
+        unlit: true,
+        alpha_mode: bevy::prelude::AlphaMode::Blend,
+        ..default()
+    });
+    let mut spawn_edge = |a: Vec3, b: Vec3| {
+        let dir = b - a;
+        let len = dir.length();
+        if len > 0.0 {
+            let center = a + dir * 0.5;
+            // Align capsule along dir using look_at then rotate to match capsule local up
+            let rot = Quat::from_rotation_arc(Vec3::Y, dir.normalize());
+            commands.spawn(PbrBundle {
+                mesh: meshes.add(edge_mesh.clone()),
+                material: edge_mat.clone(),
+                transform: Transform::from_translation(center)
+                    .with_rotation(rot)
+                    .with_scale(Vec3::new(1.0, len, 1.0)),
+                ..default()
+            });
+        }
+    };
+    // 12 edges of the box
+    let corners = [
+        Vec3::new(-bx, -by, -bz),
+        Vec3::new(bx, -by, -bz),
+        Vec3::new(-bx, by, -bz),
+        Vec3::new(bx, by, -bz),
+        Vec3::new(-bx, -by, bz),
+        Vec3::new(bx, -by, bz),
+        Vec3::new(-bx, by, bz),
+        Vec3::new(bx, by, bz),
+    ];
+    // bottom rectangle
+    spawn_edge(corners[0], corners[1]);
+    spawn_edge(corners[1], corners[3]);
+    spawn_edge(corners[3], corners[2]);
+    spawn_edge(corners[2], corners[0]);
+    // top rectangle
+    spawn_edge(corners[4], corners[5]);
+    spawn_edge(corners[5], corners[7]);
+    spawn_edge(corners[7], corners[6]);
+    spawn_edge(corners[6], corners[4]);
+    // vertical edges
+    spawn_edge(corners[0], corners[4]);
+    spawn_edge(corners[1], corners[5]);
+    spawn_edge(corners[2], corners[6]);
+    spawn_edge(corners[3], corners[7]);
+
     // Floor grid (optional simple plane)
     let mut plane = Mesh::new(PrimitiveTopology::TriangleList, Default::default());
     plane.insert_attribute(
@@ -134,11 +679,57 @@ fn setup(
     commands.spawn(PbrBundle {
         mesh: meshes.add(plane),
         material: materials.add(StandardMaterial {
-            base_color: Color::rgba(0.1, 0.1, 0.15, 1.0),
-            perceptual_roughness: 0.9,
+            base_color: Color::rgba(0.06, 0.08, 0.10, 0.55), // semi-transparent, subtle tint
+            perceptual_roughness: 1.0,
             metallic: 0.0,
+            alpha_mode: bevy::prelude::AlphaMode::Blend,
+            unlit: true, // keep it visually quiet
             ..default()
         }),
+        ..default()
+    });
+
+    // ---- Lighting Debug: Textured rectangle (checkerboard) ----
+    // Smaller vivid checkerboard so texture visibility is obvious (red vs blue)
+    let tex_size = 64u32;
+    let tile = 8; // tile size in pixels
+    let mut data = Vec::with_capacity((tex_size * tex_size * 4) as usize);
+    for y in 0..tex_size {
+        for x in 0..tex_size {
+            let a = (x / tile + y / tile) % 2 == 0;
+            let (r, g, b) = if a {
+                (210u8, 40u8, 40u8)
+            } else {
+                (40u8, 40u8, 210u8)
+            };
+            data.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    let image = Image::new(
+        Extent3d {
+            width: tex_size,
+            height: tex_size,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    let checker_handle = images.add(image);
+    let quad_mesh = Mesh::from(bevy::prelude::Plane3d::default());
+    let quad = meshes.add(quad_mesh);
+    let quad_mat = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        base_color_texture: Some(checker_handle.clone()),
+        unlit: true, // make sure texture pattern shows regardless of lighting for debugging
+        ..default()
+    });
+    // Place it behind the voxel cube, much smaller so it does not dominate view
+    commands.spawn(PbrBundle {
+        mesh: quad,
+        material: quad_mat,
+        transform: Transform::from_xyz(0.0, 0.0, -10.0).with_scale(Vec3::new(6.0, 6.0, 6.0)),
         ..default()
     });
 }
@@ -148,16 +739,21 @@ fn sim_step(
     mut sim: ResMut<DLinOssSim>,
     mut spheres: Query<(&VoxelSphere, &mut Transform)>,
     sim_cfg: Res<SimConfig>,
+    vis: Option<Res<VisualizationConfig>>,
+    camera_q: Query<&Transform, (With<Camera3d>, Without<VoxelSphere>)>,
+    anim: Option<Res<CameraAnimState>>,
+    // local flag to detect if latent energy updated this frame
+    mut latent_pushed: Local<bool>,
 ) {
     if sim_cfg.paused {
         return;
     }
     // Construct input batch [1,T,input_dim] incremental small window
     let chunk = 8usize;
-    let remaining = (sim.t_len - sim.current_t).min(chunk);
-    if remaining == 0 {
-        return;
+    if sim.current_t >= sim.t_len {
+        sim.current_t = 0;
     }
+    let remaining = chunk; // always process a fixed chunk for steady rhythm
     let start = sim.current_t;
     let end = start + remaining;
     let input_dim = sim.input_dim;
@@ -242,18 +838,98 @@ fn sim_step(
             let cap = sim.ring_capacity; // copy to avoid immutable borrow later
             if let Some(nv) = norm_val {
                 push_ring(&mut sim.latent_energy_ring, nv, cap);
+                if nv > sim.latent_energy_peak {
+                    sim.latent_energy_peak = nv;
+                } else {
+                    // slow decay of peak to allow scale to relax
+                    sim.latent_energy_peak =
+                        0.995 * sim.latent_energy_peak + 0.005 * nv.max(1e-6);
+                }
+                *latent_pushed = true;
             }
             if let Some(pp) = phase_pair_opt {
                 push_ring_phase(&mut sim.phase_points, pp, cap / 4);
             }
         }
     }
+    // Ensure latent energy plot scrolls every frame (duplicate last if no new value)
+    if !*latent_pushed {
+        let last = sim.latent_energy_ring.last().cloned().unwrap_or(0.0);
+        let cap = sim.ring_capacity; // copy to avoid simultaneous mutable/immutable borrow
+        push_ring(&mut sim.latent_energy_ring, last, cap);
+    }
+    *latent_pushed = false;
     sim.current_t += remaining;
     // Update sphere transforms based on new volume values
+    // Optional depth-based attenuation for better perspective size perception
+    let cam_tf = camera_q.iter().next();
+    let use_depth = vis
+        .as_ref()
+        .map(|v| v.depth_scale_attenuation)
+        .unwrap_or(false);
+    // Procedural continuous animation: update last_volume with a 3D multi-frequency wave
+    // Use current_t as a proxy for time and advance a fractional phase each iteration.
+    let tphase = sim_cfg.frame_counter as f32 * 0.03; // frame-based phase prevents halting growth
+    let (h, w, d) = (sim_cfg.h, sim_cfg.w, sim_cfg.d);
+    let hallu = anim
+        .as_ref()
+        .map(|a| a.mode == CameraAnimMode::HalluFly)
+        .unwrap_or(false);
+    // New animation path uses explicit pause segment; derive simple pause factor when within pause window
+    let pause_factor = if let Some(a) = anim.as_ref() {
+        if matches!(a.mode, CameraAnimMode::FlyThrough | CameraAnimMode::HalluFly) {
+            let cycle_t = a.t % a.total;
+            if cycle_t >= a.approach && cycle_t < a.approach + a.pause {
+                // normalized 0..1 across pause segment with cosine ease peak in middle
+                let local = (cycle_t - a.approach) / a.pause;
+                (std::f32::consts::PI * (local - 0.5)).cos().powi(2)
+            } else {
+                0.0
+            }
+        } else { 0.0 }
+    } else { 0.0 };
+    for z in 0..d {
+        for y in 0..h {
+            for x in 0..w {
+                let idx = z * h * w + y * w + x;
+                let xf = x as f32 / w as f32;
+                let yf = y as f32 / h as f32;
+                let zf = z as f32 / d as f32;
+                let mut v = (tphase + xf * 6.28).sin() * (tphase * 0.7 + yf * 10.0).cos() * 0.5
+                    + 0.5 * (tphase * 1.3 + zf * 12.57).sin();
+                if hallu {
+                    let radial =
+                        ((xf - 0.5).powi(2) + (yf - 0.5).powi(2) + (zf - 0.5).powi(2)).sqrt();
+                    let swirl = (tphase * 2.4 + (xf + yf * 1.3 - zf) * 18.0).sin();
+                    let breathe = (tphase * 1.7 + radial * 10.0).cos();
+                    v += 0.6 * swirl * breathe;
+                }
+                if let Some(slot) = sim.last_volume.get_mut(idx) {
+                    *slot = 0.85 * *slot + 0.15 * v; // smooth to avoid harsh flicker
+                }
+            }
+        }
+    }
+    let (base_scale, scale_factor, max_scale) = vis
+        .as_ref()
+        .map(|v| (v.base_scale, v.scale_factor, v.max_scale))
+        .unwrap_or((0.05, 0.4, 0.8));
     for (sphere, mut tf) in spheres.iter_mut() {
         if let Some(val) = sim.last_volume.get(sphere.idx) {
             let mag = val.abs();
-            let scale = (0.02 + mag * 0.18).clamp(0.01, 0.5);
+            let mut scale = (base_scale + mag * scale_factor).clamp(0.01, max_scale);
+            if use_depth {
+                if let Some(cam) = cam_tf {
+                    let dist = cam.translation.distance(tf.translation).max(0.001);
+                    let atten = (8.0 / dist).clamp(0.25, 1.2);
+                    scale *= atten;
+                }
+            }
+            if pause_factor > 0.0 {
+                if sphere.idx % 97 == 0 {
+                    scale *= 1.0 + pause_factor * 1.2; // up to 2.2x at peak pause
+                }
+            }
             tf.scale = Vec3::splat(scale);
         }
     }
@@ -264,16 +940,47 @@ fn ui_system(
     mut contexts: EguiContexts,
     mut sim_cfg: ResMut<SimConfig>,
     mut sim: ResMut<DLinOssSim>,
+    mut vis: ResMut<VisualizationConfig>,
+    mut anim: ResMut<CameraAnimState>,
+    mut light_control: ResMut<LightControl>,
+    mut q_point: Query<&mut PointLight>,
+    mut q_spot: Query<&mut SpotLight>,
+    mut q_dir: Query<&mut DirectionalLight>,
+    mut ambient: ResMut<AmbientLight>,
+    mut exposure: ResMut<ExposureSettings>,
+    mut q_cam_tone: Query<&mut Tonemapping, With<Camera3d>>,
 ) {
     let ctx = contexts.ctx_mut();
     egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.heading("D-LinOSS 3D Playground");
             if ui
-                .button(if sim_cfg.paused { "Resume" } else { "Pause" })
+                .button(if sim_cfg.paused {
+                    "Run Simulation"
+                } else {
+                    "Pause Simulation"
+                })
                 .clicked()
             {
                 sim_cfg.paused = !sim_cfg.paused;
+            }
+            if ui.button("Restart").clicked() {
+                // Reset simulation state resources
+                sim.current_t = 0;
+                sim.last_volume.fill(0.0);
+                sim.output_ring.clear();
+                sim.input_ring.clear();
+                sim.latent_energy_ring.clear();
+                sim.phase_points.clear();
+                sim.state_snapshot = None;
+                sim.spectrum_cache.clear();
+                sim_cfg.frame_counter = 0;
+                sim_cfg.paused = false; // resume running
+            }
+            if ui.button("Spike Cell").clicked() {
+                if let Some(first) = sim.last_volume.get_mut(0) {
+                    *first = vis.spike_value; // configurable spike
+                }
             }
             if ui
                 .button(if sim_cfg.capture {
@@ -284,29 +991,183 @@ fn ui_system(
                 .clicked()
             {
                 sim_cfg.capture = !sim_cfg.capture;
+                if sim_cfg.capture {
+                    sim_cfg.capture_start_frame = Some(sim_cfg.frame_counter);
+                    info!(
+                        "Capture started (prefix={}, max {} frames)",
+                        sim_cfg.capture_prefix, sim_cfg.max_capture_frames
+                    );
+                } else {
+                    info!("Capture stopped");
+                }
             }
             ui.label(format!("Frame: {}", sim_cfg.frame_counter));
             ui.separator();
+            if ui
+                .button(match anim.mode {
+                    CameraAnimMode::Idle => "Fly Through",
+                    _ => "Stop Fly",
+                })
+                .clicked()
+            {
+                anim.t = 0.0;
+                anim.mode = match anim.mode {
+                    CameraAnimMode::Idle => CameraAnimMode::FlyThrough,
+                    _ => CameraAnimMode::Idle,
+                };
+            }
+            if ui
+                .button(match anim.mode {
+                    CameraAnimMode::HalluFly => "Stop HalluFly",
+                    _ => "HalluFly",
+                })
+                .clicked()
+            {
+                anim.t = 0.0;
+                anim.mode = match anim.mode {
+                    CameraAnimMode::HalluFly => CameraAnimMode::Idle,
+                    _ => CameraAnimMode::HalluFly,
+                };
+            }
+            if ui
+                .button(if light_control.enabled {
+                    "Lighting ON (toggle)"
+                } else {
+                    "Lighting OFF (toggle)"
+                })
+                .clicked()
+            {
+                light_control.enabled = !light_control.enabled;
+                if light_control.enabled {
+                    for mut pl in q_point.iter_mut() {
+                        pl.intensity = light_control.original_point * light_control.intensity_scale;
+                    }
+                    for mut sl in q_spot.iter_mut() {
+                        sl.intensity = light_control.original_spot * light_control.intensity_scale;
+                    }
+                    for mut dl in q_dir.iter_mut() {
+                        dl.illuminance =
+                            light_control.original_directional * light_control.intensity_scale;
+                    }
+                    ambient.brightness =
+                        light_control.original_ambient * light_control.intensity_scale;
+                    info!("Lighting toggled ON");
+                } else {
+                    for mut pl in q_point.iter_mut() {
+                        pl.intensity = 0.0;
+                    }
+                    for mut sl in q_spot.iter_mut() {
+                        sl.intensity = 0.0;
+                    }
+                    for mut dl in q_dir.iter_mut() {
+                        dl.illuminance = 0.0;
+                    }
+                    ambient.brightness = 0.0;
+                    info!("Lighting toggled OFF");
+                }
+            }
+            ui.add(
+                egui::Slider::new(&mut light_control.intensity_scale, 0.05..=3.0)
+                    .text("Light scale"),
+            );
+            if ui.button("Apply Scale").clicked() && light_control.enabled {
+                for mut pl in q_point.iter_mut() {
+                    pl.intensity = light_control.original_point * light_control.intensity_scale;
+                }
+                for mut sl in q_spot.iter_mut() {
+                    sl.intensity = light_control.original_spot * light_control.intensity_scale;
+                }
+                for mut dl in q_dir.iter_mut() {
+                    dl.illuminance =
+                        light_control.original_directional * light_control.intensity_scale;
+                }
+                ambient.brightness = light_control.original_ambient * light_control.intensity_scale;
+            }
+            let pt_sum: f32 = q_point.iter().map(|p| p.intensity).sum();
+            let sp_sum: f32 = q_spot.iter().map(|s| s.intensity).sum();
+            let dir_sum: f32 = q_dir.iter().map(|d| d.illuminance).sum();
+            ui.label(format!(
+                "Lights {} | Pt {:.0} Sp {:.0} Dir {:.0} Amb {:.2}",
+                if light_control.enabled { "ON" } else { "OFF" },
+                pt_sum,
+                sp_sum,
+                dir_sum,
+                ambient.brightness
+            ));
             ui.label(format!("Grid: {}x{}x{}", sim_cfg.h, sim_cfg.w, sim_cfg.d));
         });
     });
     egui::SidePanel::left("left_panel").show(ctx, |ui| {
         ui.heading("Time Series");
-        simple_plot(ui, "Input/Output", &sim.input_ring, &sim.output_ring, 160.0);
+        simple_plot(
+            ui,
+            "Input/Output",
+            &sim.input_ring,
+            &sim.output_ring,
+            160.0,
+            vis.reverse_time_scroll,
+            vis.time_window,
+        );
         ui.separator();
         ui.heading("Latent Energy (Approx)");
-        simple_plot_single(
+        simple_plot_single_stable(
             ui,
             "Energy",
             &sim.latent_energy_ring,
             120.0,
             egui::Color32::RED,
+            vis.reverse_time_scroll,
+            vis.time_window,
+            sim.latent_energy_peak,
         );
     });
     egui::SidePanel::right("right_panel").show(ctx, |ui| {
         ui.heading("3D Controls");
         ui.label("Camera orbit & colormap: TODO");
         ui.separator();
+        ui.label("Visualization Toggles:");
+        ui.checkbox(&mut vis.depth_scale_attenuation, "Depth size attenuation");
+        ui.checkbox(&mut vis.reverse_time_scroll, "Time scroll RTL");
+        ui.add(egui::Slider::new(&mut vis.time_window, 100..=4096).text("Time window"));
+        ui.checkbox(&mut vis.show_center_axes, "Center axes");
+        ui.checkbox(&mut vis.show_corner_axes, "Corner axes");
+        ui.collapsing("Sphere Scale", |ui| {
+            ui.add(egui::Slider::new(&mut vis.base_scale, 0.01..=0.3).text("Base"));
+            ui.add(egui::Slider::new(&mut vis.scale_factor, 0.1..=2.0).text("Factor"));
+            ui.add(egui::Slider::new(&mut vis.max_scale, 0.2..=3.0).text("Max"));
+            ui.add(egui::Slider::new(&mut vis.spike_value, 1.0..=50.0).text("Spike"));
+        });
+        ui.separator();
+        ui.heading("Tonemapping & Exposure");
+        // Tonemapping combo
+        if let Ok(mut tone) = q_cam_tone.get_single_mut() {
+            let current = *tone;
+            egui::ComboBox::from_label("Tonemapper")
+                .selected_text(format!("{:?}", current))
+                .show_ui(ui, |cb| {
+                    for variant in [
+                        Tonemapping::AcesFitted,
+                        Tonemapping::AgX,
+                        Tonemapping::Reinhard,
+                        Tonemapping::BlenderFilmic,
+                        Tonemapping::TonyMcMapface,
+                        Tonemapping::SomewhatBoringDisplayTransform,
+                    ] {
+                        cb.selectable_value(&mut *tone, variant, format!("{:?}", variant));
+                    }
+                });
+        }
+        let mut ev_changed = false;
+        let old_ev = exposure.ev;
+        ui.add(egui::Slider::new(&mut exposure.ev, -8.0..=8.0).text("Exposure EV"));
+        if (exposure.ev - old_ev).abs() > 1e-4 {
+            exposure.pending_apply = true;
+            ev_changed = true;
+        }
+        if ev_changed {
+            ui.colored_label(egui::Color32::LIGHT_GREEN, "EV updated");
+        }
+        ui.small("Non-destructive: original light intensities preserved.");
         ui.heading("FFT / Spectrum");
         if ui.button("FFT 256").clicked() {
             compute_fft_window(&mut sim, 256);
@@ -328,12 +1189,54 @@ fn ui_system(
     egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
         ui.label("Phase Portrait & Diagnostics (future pane)");
     });
+
+    // Orientation gizmo (bottom-left overlay) - simple RGB axis triad projected
+    egui::Area::new("orientation_gizmo")
+        .movable(false)
+        .interactable(false)
+        .fixed_pos([8.0, ctx.available_rect().bottom() - 96.0])
+        .show(ctx, |ui| {
+            let size = egui::vec2(80.0, 80.0);
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            let painter = ui.painter_at(rect);
+            painter.rect_filled(rect, 6.0, egui::Color32::from_black_alpha(32));
+            // Use camera orientation if available later; for now assume identity axes
+            let center = rect.center();
+            let scale = 28.0;
+            let draw_axis =
+                |dir: Vec3, col: egui::Color32, label: &str, painter: &egui::Painter| {
+                    let p = center + egui::Vec2::new(dir.x, -dir.y) * scale;
+                    painter.line_segment([center, p], egui::Stroke::new(2.0, col));
+                    painter.text(
+                        p,
+                        egui::Align2::CENTER_CENTER,
+                        label,
+                        egui::FontId::proportional(10.0),
+                        col,
+                    );
+                };
+            draw_axis(Vec3::X, egui::Color32::RED, "X", &painter);
+            draw_axis(Vec3::Y, egui::Color32::GREEN, "Y", &painter);
+            draw_axis(Vec3::Z, egui::Color32::BLUE, "Z", &painter);
+        });
 }
 
 // Frame capture placeholder
-fn capture_system(sim_cfg: Res<SimConfig>, sim: Res<DLinOssSim>) {
+fn capture_system(mut sim_cfg: ResMut<SimConfig>, sim: Res<DLinOssSim>) {
     if !sim_cfg.capture {
         return;
+    }
+    // Enforce per-session limit (~5s) with auto-stop
+    if let Some(start) = sim_cfg.capture_start_frame {
+        let elapsed = sim_cfg.frame_counter.saturating_sub(start);
+        if elapsed >= sim_cfg.max_capture_frames {
+            sim_cfg.capture = false;
+            info!(
+                "Capture auto-stopped after {} frames (prefix={})",
+                elapsed, sim_cfg.capture_prefix
+            );
+            return;
+        }
     }
     let dir = "images_store/SHOWCASE";
     let _ = fs::create_dir_all(dir);
@@ -358,7 +1261,18 @@ fn capture_system(sim_cfg: Res<SimConfig>, sim: Res<DLinOssSim>) {
             }
         }
     }
-    let path = format!("{}/frame_{:06}.png", dir, sim_cfg.frame_counter);
+    let path = if let Some(start) = sim_cfg.capture_start_frame {
+        let rel = sim_cfg.frame_counter.saturating_sub(start);
+        format!(
+            "{}/{}_frame_{:05}.png",
+            dir, sim_cfg.capture_prefix, rel
+        )
+    } else {
+        format!(
+            "{}/{}_frame_{:05}.png",
+            dir, sim_cfg.capture_prefix, sim_cfg.frame_counter
+        )
+    };
     if let Ok(f) = File::create(&path) {
         let mut w = BufWriter::new(f);
         #[allow(deprecated)]
@@ -512,19 +1426,38 @@ fn phase_plot(ui: &mut egui::Ui, pts: &[[f32; 2]], height: f32) {
 // push_ring_phase now imported from support
 
 // Very lightweight plot helpers (no external deps) using egui painter.
-fn simple_plot(ui: &mut egui::Ui, title: &str, a: &[f32], b: &[f32], height: f32) {
+fn simple_plot(
+    ui: &mut egui::Ui,
+    title: &str,
+    a_full: &[f32],
+    b_full: &[f32],
+    height: f32,
+    reverse: bool,
+    time_window: usize,
+) {
     ui.label(title);
     let desired = egui::Vec2::new(ui.available_width(), height);
     let (rect, _resp) = ui.allocate_exact_size(desired, egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::DARK_GRAY));
+    let a = if a_full.len() <= time_window {
+        a_full
+    } else {
+        &a_full[a_full.len() - time_window..]
+    };
+    let b = if b_full.len() <= time_window {
+        b_full
+    } else {
+        &b_full[b_full.len() - time_window..]
+    };
     let max_len = a.len().max(b.len()).max(1);
     let (min_a, max_a) = min_max(a);
     let (min_b, max_b) = min_max(b);
     let min_v = min_a.min(min_b);
     let max_v = max_a.max(max_b).max(min_v + 1e-6);
     let to_point = |i: usize, v: f32| {
-        let x = i as f32 / (max_len - 1).max(1) as f32;
+        let xf = i as f32 / (max_len - 1).max(1) as f32;
+        let x = if reverse { 1.0 - xf } else { xf };
         let y = if max_v > min_v {
             (v - min_v) / (max_v - min_v)
         } else {
@@ -536,26 +1469,55 @@ fn simple_plot(ui: &mut egui::Ui, title: &str, a: &[f32], b: &[f32], height: f32
         )
     };
     polyline(painter.clone(), a, egui::Color32::LIGHT_BLUE, to_point);
-    polyline(painter, b, egui::Color32::GOLD, to_point);
+    polyline(painter.clone(), b, egui::Color32::GOLD, to_point);
+    // Time axis labels when reverse (0 at right, negative to left)
+    if reverse {
+        let ticks = 5.min(max_len - 1);
+        for i in 0..=ticks {
+            let frac = i as f32 / ticks.max(1) as f32;
+            let x = rect.left() + (1.0 - frac) * rect.width();
+            let t_val = -((frac * (max_len - 1) as f32) as i32);
+            let label = if t_val == 0 {
+                "0".to_string()
+            } else {
+                format!("{}", t_val)
+            };
+            painter.text(
+                egui::pos2(x, rect.bottom() + 2.0),
+                egui::Align2::CENTER_TOP,
+                label,
+                egui::FontId::monospace(10.0),
+                egui::Color32::GRAY,
+            );
+        }
+    }
 }
 
 fn simple_plot_single(
     ui: &mut egui::Ui,
     title: &str,
-    a: &[f32],
+    a_full: &[f32],
     height: f32,
     color: egui::Color32,
+    reverse: bool,
+    time_window: usize,
 ) {
     ui.label(title);
     let desired = egui::Vec2::new(ui.available_width(), height);
     let (rect, _resp) = ui.allocate_exact_size(desired, egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::DARK_GRAY));
+    let a = if a_full.len() <= time_window {
+        a_full
+    } else {
+        &a_full[a_full.len() - time_window..]
+    };
     let max_len = a.len().max(1);
     let (min_a, max_a) = min_max(a);
     let max_v = max_a.max(min_a + 1e-6);
     let to_point = |i: usize, v: f32| {
-        let x = i as f32 / (max_len - 1).max(1) as f32;
+        let xf = i as f32 / (max_len - 1).max(1) as f32;
+        let x = if reverse { 1.0 - xf } else { xf };
         let y = if max_v > min_a {
             (v - min_a) / (max_v - min_a)
         } else {
@@ -566,7 +1528,88 @@ fn simple_plot_single(
             rect.bottom() - y * rect.height(),
         )
     };
-    polyline(painter, a, color, to_point);
+    polyline(painter.clone(), a, color, to_point);
+    if reverse {
+        let max_len = a.len().max(1);
+        let ticks = 5.min(max_len - 1);
+        for i in 0..=ticks {
+            let frac = i as f32 / ticks.max(1) as f32;
+            let x = rect.left() + (1.0 - frac) * rect.width();
+            let t_val = -((frac * (max_len - 1) as f32) as i32);
+            let label = if t_val == 0 {
+                "0".to_string()
+            } else {
+                format!("{}", t_val)
+            };
+            painter.text(
+                egui::pos2(x, rect.bottom() + 2.0),
+                egui::Align2::CENTER_TOP,
+                label,
+                egui::FontId::monospace(10.0),
+                egui::Color32::GRAY,
+            );
+        }
+    }
+}
+
+// Stable variant: uses provided max_y (peak) for vertical scale (with fallback to data max)
+fn simple_plot_single_stable(
+    ui: &mut egui::Ui,
+    title: &str,
+    a_full: &[f32],
+    height: f32,
+    color: egui::Color32,
+    reverse: bool,
+    time_window: usize,
+    peak: f32,
+) {
+    ui.label(title);
+    let desired = egui::Vec2::new(ui.available_width(), height);
+    let (rect, _resp) = ui.allocate_exact_size(desired, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::DARK_GRAY));
+    let a = if a_full.len() <= time_window {
+        a_full
+    } else {
+        &a_full[a_full.len() - time_window..]
+    };
+    let max_len = a.len().max(1);
+    let (min_a, max_a_data) = min_max(a);
+    let max_v = peak.max(max_a_data).max(min_a + 1e-6);
+    let to_point = |i: usize, v: f32| {
+        let xf = i as f32 / (max_len - 1).max(1) as f32;
+        let x = if reverse { 1.0 - xf } else { xf };
+        let y = if max_v > min_a {
+            (v - min_a) / (max_v - min_a)
+        } else {
+            0.5
+        };
+        egui::pos2(
+            rect.left() + x * rect.width(),
+            rect.bottom() - y * rect.height(),
+        )
+    };
+    polyline(painter.clone(), a, color, to_point);
+    if reverse {
+        let ticks = 5.min(max_len - 1);
+        for i in 0..=ticks {
+            let frac = i as f32 / ticks.max(1) as f32;
+            let x = rect.left() + (1.0 - frac) * rect.width();
+            let t_val = -((frac * (max_len - 1) as f32) as i32);
+            let label = if t_val == 0 {
+                "0".to_string()
+            } else {
+                format!("{}", t_val)
+            };
+            painter.text(
+                egui::pos2(x, rect.bottom() + 2.0),
+                egui::Align2::CENTER_TOP,
+                label,
+                egui::FontId::monospace(10.0),
+                egui::Color32::GRAY,
+            );
+        }
+    }
 }
 
 fn min_max(slice: &[f32]) -> (f32, f32) {
@@ -633,7 +1676,13 @@ pub fn main() -> Result<()> {
         latent_pair: (0, 1),
         state_snapshot: None,
         spectrum_cache: Vec::with_capacity(1024),
+        latent_energy_peak: 1e-6,
     };
+    // Generate session prefix (UTC seconds) for capture naming
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let sim_cfg = SimConfig {
         h,
         w,
@@ -641,6 +1690,9 @@ pub fn main() -> Result<()> {
         paused: false,
         capture: false,
         frame_counter: 0,
+        capture_start_frame: None,
+        max_capture_frames: 300, // ~5s at 60fps
+        capture_prefix: format!("sess{}", ts),
     };
 
     let headless = env::var("DLINOSS_HEADLESS")
@@ -650,21 +1702,54 @@ pub fn main() -> Result<()> {
     let mut app = App::new();
     app.insert_resource(sim_cfg)
         .insert_resource(sim_res)
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: if headless {
-                None
-            } else {
-                Some(Window {
-                    title: "D-LinOSS 3D Playground".into(),
-                    resolution: (1380.0, 900.0).into(),
-                    ..default()
-                })
-            },
+        .insert_resource(CameraOrbitController::default());
+    app.insert_resource(VisualizationConfig::default());
+
+    if headless {
+        // In headless mode use MinimalPlugins to avoid initializing render resources
+        // (PipelineCache, shaders, etc.) which require a window. This allows running
+        // update systems for a fixed number of frames in CI or headless environments.
+        app.add_plugins(MinimalPlugins);
+    } else {
+        app.add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "D-LinOSS 3D Playground".into(),
+                resolution: (1380.0, 900.0).into(),
+                ..default()
+            }),
             ..default()
-        }))
-        .add_plugins(EguiPlugin)
-        .add_systems(Startup, setup)
-        .add_systems(Update, (sim_step, ui_system, capture_system, frame_counter));
+        }));
+    }
+
+    // Only add Egui and UI systems when not running headless. In headless mode
+    // there's no primary window / Egui contexts and calling ctx_mut() panics.
+    if !headless {
+        app.add_plugins(EguiPlugin)
+            .add_systems(Startup, setup)
+            .add_systems(
+                Update,
+                (
+                    sim_step,
+                    ui_system,
+                    exposure_apply_system,
+                    capture_system,
+                    frame_counter,
+                    camera_orbit_system,
+                    axis_visibility_system,
+                    camera_anim_system,
+                ),
+            );
+        // Ambient light for subtle base illumination (helps metallic translucent spheres)
+        app.insert_resource(AmbientLight {
+            color: Color::rgb_linear(0.25, 0.27, 0.30),
+            brightness: 0.35,
+        });
+    } else {
+        // Headless: register only non-UI systems. Do not run `setup` because it
+        // depends on render assets (Mesh/Material) which are unavailable with
+        // MinimalPlugins in headless mode.
+        app.add_systems(Update, (sim_step, capture_system, frame_counter));
+    }
     if headless {
         let max_frames: u64 = env::var("DLINOSS_FRAMES")
             .ok()
