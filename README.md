@@ -12,6 +12,20 @@
 - [Workspace Sub-Crates (`crates/`)](crates/README.md)
 <!-- docs-index:end -->
 
+## 🎬 Showcase (Preview GIFs)
+
+Interactive simulation and visualization excerpts. Click a preview to open the full-size animated GIF (larger file) stored alongside other media in `images_store/`.
+
+| Preview (click) | Scene | Notes |
+|------------------|-------|-------|
+| [![Matrix Flythrough](images_store/SHOWCASE/3dmatrixviewerflythrough_preview.gif)](images_store/3dmatrixviewerflythrough.gif) | 3D Matrix Flythrough | Camera traverses volumetric lattice; demonstrates depth & energy field modulation. |
+| [![Ring & Moving Balls](images_store/SHOWCASE/dlinossrustcandleringandmovingballs_preview.gif)](images_store/dlinossrustcandleringandmovingballs.gif) | Ring & Moving Spheres | Multi-metric sphere scaling driven by latent energy & variance signals. |
+| [![Hallu Grid Animation](images_store/SHOWCASE/halugridanimation_preview.gif)](images_store/halugridanimation.gif) | Hallucinatory Grid | Complex wave mode + animated camera producing interference patterns. |
+
+Full-resolution / archival videos (AVI / MP4 / WebM) and additional artifacts live under `images_store/` (large originals may use Git LFS if enabled). The `SHOWCASE/` subfolder intentionally contains only size‑controlled preview assets for fast page loads.
+
+> If the previews do not animate on some Markdown renderers, open the image in a new tab or use the full-size link.
+
 > 📋 **Quick Start**: Read [requirements.md](./requirements.md) for complete development setup  
 
 > 🔧 **Architecture**: See [crates/README.md](./crates/README.md#sub-crates-overview) for workspace structure  DLiNOSS (Damped Linear Oscillatory State Space) layer implemented with Candlekos which was build on [Candle](https://github.com/huggingface/candle) tensors.
